@@ -1,0 +1,89 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+interface CampaignSummary {
+  id: string;
+  name: string;
+  region: string;
+  niche: string;
+  source: string;
+  status: string;
+  createdAt: string;
+  _count: { businesses: number };
+}
+
+const STATUS_STYLES: Record<string, string> = {
+  DRAFT: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  RUNNING: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  DONE: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+  FAILED: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+};
+
+export default function Home() {
+  const [campaigns, setCampaigns] = useState<CampaignSummary[] | null>(null);
+
+  useEffect(() => {
+    fetch("/api/campaigns")
+      .then((r) => r.json())
+      .then(setCampaigns);
+  }, []);
+
+  return (
+    <div className="flex flex-1 flex-col bg-zinc-50 dark:bg-black">
+      <main className="mx-auto w-full max-w-4xl flex-1 px-6 py-12">
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              Presence Gap Engine
+            </h1>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              Find → detect gap → rank → reach out. One campaign is one target box.
+            </p>
+          </div>
+          <Link
+            href="/campaigns/new"
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            New campaign
+          </Link>
+        </div>
+
+        {campaigns === null ? (
+          <p className="text-sm text-zinc-500">Loading…</p>
+        ) : campaigns.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
+            <p className="text-sm text-zinc-500">
+              No campaigns yet. Start with a narrow box — one region, one niche, one weakness.
+            </p>
+            <Link href="/campaigns/new" className="mt-3 inline-block text-sm font-medium text-zinc-900 underline dark:text-zinc-100">
+              Create your first campaign
+            </Link>
+          </div>
+        ) : (
+          <ul className="divide-y divide-zinc-200 rounded-lg border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-950">
+            {campaigns.map((c) => (
+              <li key={c.id}>
+                <Link
+                  href={`/campaigns/${c.id}`}
+                  className="flex items-center justify-between gap-4 px-5 py-4 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                >
+                  <div>
+                    <p className="font-medium text-zinc-900 dark:text-zinc-50">{c.name}</p>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      {c.niche} in {c.region} · {c._count.businesses} leads
+                    </p>
+                  </div>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_STYLES[c.status]}`}>
+                    {c.status}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </main>
+    </div>
+  );
+}

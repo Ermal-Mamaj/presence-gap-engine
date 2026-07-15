@@ -1,0 +1,111 @@
+// Presence Gap Engine — data model
+//
+// Campaign  = one "target box" (region + niche + weakness focus)
+// Business  = a lead pulled from a source (OSM / Google Maps scraper)
+// GapSignal = one publicly-observable weakness detected for a Business
+// Outreach  = a drafted message for a Business, tied to a CRM stage
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum SourceType {
+  OSM
+  GOOGLE_MAPS_SCRAPER
+}
+
+enum CampaignStatus {
+  DRAFT
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum CrmStage {
+  NEW
+  QUALIFIED
+  CONTACTED
+  REPLIED
+  CONVERTED
+  DELIVERED
+  RETAINED
+  DEAD
+}
+
+model Campaign {
+  id          String         @id @default(cuid())
+  name        String
+  region      String
+  niche       String
+  source      SourceType     @default(OSM)
+  status      CampaignStatus @default(DRAFT)
+  errorMessage String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  businesses  Business[]
+}
+
+model Business {
+  id            String   @id @default(cuid())
+  campaignId    String
+  campaign      Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  name          String
+  address       String?
+  phone         String?
+  website       String?
+  latitude      Float?
+  longitude     Float?
+  rating        Float?
+  reviewCount   Int?
+  sourceRef     String?  // id/url from the originating source, for de-duping / provenance
+
+  score         Float    @default(0)
+  crmStage      CrmStage @default(NEW)
+  notes         String?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  signals       GapSignal[]
+  outreach      Outreach[]
+
+  @@index([campaignId])
+  @@index([campaignId, score])
+}
+
+model GapSignal {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  key        String   // e.g. "no_website", "not_https", "no_mobile_viewport", "site_unreachable", "stale_site"
+  label      String   // human-readable, e.g. "No website found"
+  severity   Int      // contribution to score, higher = stronger gap
+  detail     String?  // freeform evidence, e.g. status code, response time
+
+  createdAt  DateTime @default(now())
+
+  @@index([businessId])
+}
+
+model Outreach {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  channel    String   @default("email")
+  subject    String?
+  body       String
+  openLine   String
+
+  createdAt  DateTime @default(now())
+
+  @@index([businessId])
+}
