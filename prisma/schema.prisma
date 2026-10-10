@@ -4,6 +4,8 @@
 // Business  = a lead pulled from a source (OSM / Google Maps scraper)
 // GapSignal = one publicly-observable weakness detected for a Business
 // Outreach  = a drafted message for a Business, tied to a CRM stage
+// ScanRun   = one execution of a Campaign's discovery; Businesses outlive scans
+// StageChange = append-only CRM history for a Business
 
 generator client {
   provider = "prisma-client"
@@ -24,6 +26,21 @@ enum CampaignStatus {
   RUNNING
   DONE
   FAILED
+}
+
+enum ScanStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+// What the website check concluded. NEEDS_CHECK means the evidence is
+// incomplete or inconclusive (e.g. one failed request), not "bad".
+enum WebsiteStatus {
+  NONE_FOUND
+  NEEDS_WORK
+  NEEDS_CHECK
+  GOOD
 }
 
 enum CrmStage {
@@ -49,6 +66,25 @@ model Campaign {
   updatedAt   DateTime       @updatedAt
 
   businesses  Business[]
+  scans       ScanRun[]
+}
+
+model ScanRun {
+  id           String     @id @default(cuid())
+  campaignId   String
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  status       ScanStatus @default(RUNNING)
+  errorMessage String?
+  found        Int        @default(0) // valid, de-duplicated records the source returned
+  created      Int        @default(0) // new leads added by this scan
+  updated      Int        @default(0) // existing leads refreshed by this scan
+  skipped      Int        @default(0) // invalid or duplicate records ignored
+
+  startedAt    DateTime   @default(now())
+  finishedAt   DateTime?
+
+  @@index([campaignId, startedAt])
 }
 
 model Business {
@@ -64,7 +100,10 @@ model Business {
   longitude     Float?
   rating        Float?
   reviewCount   Int?
-  sourceRef     String?  // id/url from the originating source, for de-duping / provenance
+  sourceRef     String?  // id/url from the originating source, for provenance
+  dedupeKey     String   // stable identity within a campaign, see src/lib/dedupe.ts
+  websiteStatus WebsiteStatus @default(NEEDS_CHECK)
+  lastSeenAt    DateTime @default(now()) // last scan that returned this business
 
   score         Float    @default(0)
   crmStage      CrmStage @default(NEW)
@@ -75,7 +114,9 @@ model Business {
 
   signals       GapSignal[]
   outreach      Outreach[]
+  stageChanges  StageChange[]
 
+  @@unique([campaignId, dedupeKey])
   @@index([campaignId])
   @@index([campaignId, score])
 }
@@ -89,6 +130,7 @@ model GapSignal {
   label      String   // human-readable, e.g. "No website found"
   severity   Int      // contribution to score, higher = stronger gap
   detail     String?  // freeform evidence, e.g. status code, response time
+  certainty  String   @default("VERIFIED") // UNCERTAIN when a single failed check can't prove it
 
   createdAt  DateTime @default(now())
 
@@ -108,4 +150,16 @@ model Outreach {
   createdAt  DateTime @default(now())
 
   @@index([businessId])
+}
+
+model StageChange {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  fromStage  CrmStage
+  toStage    CrmStage
+  createdAt  DateTime  @default(now())
+
+  @@index([businessId, createdAt])
 }
