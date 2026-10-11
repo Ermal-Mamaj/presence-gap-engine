@@ -65,6 +65,8 @@ export default function LeadDetailPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [notesState, setNotesState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Whether the notes box holds edits the server hasn't accepted. A ref, not
    * state: `load` must read it without being rebuilt every keystroke.
@@ -95,6 +97,25 @@ export default function LeadDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+  }, []);
+
+  /** Copies the draft as pasteable text: subject line, blank line, body. */
+  async function copyDraft(draft: Outreach) {
+    const text = draft.subject ? `Subject: ${draft.subject}\n\n${draft.body}` : draft.body;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // The clipboard needs a secure context and the user's permission, so it
+      // can legitimately refuse. Say what to do instead of failing silently.
+      setDraftError("Could not reach the clipboard. Select the draft and copy it manually.");
+    }
+  }
 
   async function handleDraft() {
     setDrafting(true);
@@ -277,13 +298,23 @@ export default function LeadDetailPage() {
         <section className="mt-8">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Outreach draft</h2>
-            <button
-              onClick={handleDraft}
-              disabled={drafting}
-              className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-            >
-              {drafting ? "Drafting…" : latestDraft ? "Regenerate draft" : "Generate draft"}
-            </button>
+            <div className="flex items-center gap-2">
+              {latestDraft && (
+                <button
+                  onClick={() => copyDraft(latestDraft)}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              )}
+              <button
+                onClick={handleDraft}
+                disabled={drafting}
+                className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                {drafting ? "Drafting…" : latestDraft ? "Regenerate draft" : "Generate draft"}
+              </button>
+            </div>
           </div>
           {draftError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{draftError}</p>}
           {!latestDraft ? (

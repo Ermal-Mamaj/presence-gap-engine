@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CRM_STAGES } from "@/lib/crm";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
   formatDuration,
@@ -12,6 +13,12 @@ import {
   WEBSITE_STATUS_LABEL,
   WEBSITE_STATUS_STYLE,
 } from "@/lib/display";
+
+const WEBSITE_STATUSES: WebsiteStatus[] = ["NONE_FOUND", "NEEDS_WORK", "NEEDS_CHECK", "GOOD"];
+type SortKey = "score" | "name";
+
+const CONTROL_CLASS =
+  "rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
 
 interface GapSignal {
   id: string;
@@ -77,6 +84,9 @@ export default function CampaignDetailPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [stageFilter, setStageFilter] = useState<string>("ALL");
+  const [siteFilter, setSiteFilter] = useState<string>("ALL");
+  const [sortKey, setSortKey] = useState<SortKey>("score");
 
   // Promise callbacks rather than async/await: state must not be set on the
   // effect's synchronous path (react-hooks/set-state-in-effect).
@@ -116,6 +126,21 @@ export default function CampaignDetailPage() {
     if (lastGoodScanAt === null) return false;
     return new Date(business.lastSeenAt).getTime() < lastGoodScanAt;
   }
+
+  // Filtering and sorting are client-side: a campaign holds tens of leads, all
+  // of which are already on the page, so a round trip would only add latency.
+  const visible = useMemo(() => {
+    const rows = (campaign?.businesses ?? []).filter(
+      (b) =>
+        (stageFilter === "ALL" || b.crmStage === stageFilter) &&
+        (siteFilter === "ALL" || b.websiteStatus === siteFilter)
+    );
+    return rows.sort((a, b) =>
+      sortKey === "name" ? a.name.localeCompare(b.name) : b.score - a.score
+    );
+  }, [campaign?.businesses, stageFilter, siteFilter, sortKey]);
+
+  const filtering = stageFilter !== "ALL" || siteFilter !== "ALL";
 
   async function handleRun() {
     setRunning(true);
@@ -218,7 +243,87 @@ export default function CampaignDetailPage() {
             <p className="text-sm text-zinc-500">No leads yet. Run the pipeline to find and score businesses.</p>
           </div>
         ) : (
-          <div className="mt-8 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <>
+            <div className="mt-8 flex flex-wrap items-center gap-2">
+              <label htmlFor="stage-filter" className="sr-only">
+                Filter by stage
+              </label>
+              <select
+                id="stage-filter"
+                value={stageFilter}
+                onChange={(e) => setStageFilter(e.target.value)}
+                className={CONTROL_CLASS}
+              >
+                <option value="ALL">All stages</option>
+                {CRM_STAGES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+
+              <label htmlFor="site-filter" className="sr-only">
+                Filter by site status
+              </label>
+              <select
+                id="site-filter"
+                value={siteFilter}
+                onChange={(e) => setSiteFilter(e.target.value)}
+                className={CONTROL_CLASS}
+              >
+                <option value="ALL">Any site status</option>
+                {WEBSITE_STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {WEBSITE_STATUS_LABEL[s]}
+                  </option>
+                ))}
+              </select>
+
+              <label htmlFor="sort-key" className="sr-only">
+                Sort
+              </label>
+              <select
+                id="sort-key"
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className={CONTROL_CLASS}
+              >
+                <option value="score">Highest score</option>
+                <option value="name">Name A–Z</option>
+              </select>
+
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                {filtering
+                  ? `${visible.length} of ${campaign.businesses.length} leads`
+                  : `${campaign.businesses.length} leads`}
+              </span>
+
+              {/* Exports the whole campaign, not the filtered view — said plainly
+                  here so the two can't quietly disagree. */}
+              <a
+                href={`/api/campaigns/${id}/export`}
+                title="Downloads every lead in this campaign, ignoring the filters above."
+                className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              >
+                Export all as CSV
+              </a>
+            </div>
+
+            {visible.length === 0 ? (
+              <div className="mt-4 rounded-lg border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
+                <p className="text-sm text-zinc-500">No leads match these filters.</p>
+                <button
+                  onClick={() => {
+                    setStageFilter("ALL");
+                    setSiteFilter("ALL");
+                  }}
+                  className="mt-3 text-sm font-medium text-zinc-900 underline dark:text-zinc-100"
+                >
+                  Clear filters
+                </button>
+              </div>
+            ) : (
+          <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
             <table className="w-full text-sm">
               <thead className="bg-zinc-100 text-left text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
                 <tr>
@@ -231,7 +336,7 @@ export default function CampaignDetailPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 bg-white dark:divide-zinc-800 dark:bg-zinc-950">
-                {campaign.businesses.map((b) => (
+                {visible.map((b) => (
                   <tr key={b.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                     <td className="px-4 py-3">
                       <Link href={`/leads/${b.id}`} className="font-medium text-zinc-900 hover:underline dark:text-zinc-50">
@@ -296,6 +401,8 @@ export default function CampaignDetailPage() {
               </tbody>
             </table>
           </div>
+            )}
+          </>
         )}
 
         {campaign.scans.length > 0 && (
