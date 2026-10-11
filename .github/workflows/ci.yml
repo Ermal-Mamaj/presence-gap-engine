@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A new push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    env:
+      # The Vitest harness sets its own DATABASE_URL per temp database, but
+      # `next build` imports src/lib/prisma.ts, which builds an adapter at module
+      # load. Point that at a throwaway file so the build never depends on a .env.
+      DATABASE_URL: file:./ci.db
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Next.js 16 requires Node 20.9+; 22 is the current LTS.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` runs the postinstall `prisma generate`, which the typecheck
+      # needs for src/generated/prisma. Playwright is only used by the Google
+      # Maps source, never by the tests, so no browsers are downloaded.
+      - name: Install dependencies
+        run: npm ci
+
+      # Each check is its own step so a failure names itself in the UI.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Builds a throwaway SQLite database from the real migrations, so this
+      # also proves the migrations still apply to an empty database.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

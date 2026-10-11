@@ -1,5 +1,7 @@
 # Presence Gap Engine
 
+[![CI](https://github.com/Ermal-Mamaj/presence-gap-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Ermal-Mamaj/presence-gap-engine/actions/workflows/ci.yml)
+
 Find businesses with a visibly weak or missing web presence, prove you noticed
 something specific and real about them, offer to fix it, deliver the work,
 then keep them around.
@@ -100,6 +102,8 @@ npm run dev
 ```
 
 Checks: `npm run typecheck`, `npm run lint`, `npm test` (Vitest; builds a throwaway SQLite database from the real migrations, so it never touches `prisma/dev.db`), and `npm run build`. `npm install` runs `prisma generate` for you.
+
+The same four checks run in CI on every push and pull request (`.github/workflows/ci.yml`, Node 22).
 
 Open [http://localhost:3000](http://localhost:3000). Create a campaign with a
 narrow region + niche, run the pipeline, then open a lead to see its score,
