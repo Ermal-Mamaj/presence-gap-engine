@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 interface CampaignSummary {
   id: string;
@@ -23,12 +23,29 @@ const STATUS_STYLES: Record<string, string> = {
 
 export default function Home() {
   const [campaigns, setCampaigns] = useState<CampaignSummary[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Promise callbacks rather than async/await: state must not be set on the
+  // effect's synchronous path (react-hooks/set-state-in-effect).
+  const load = useCallback(() => {
+    fetch("/api/campaigns")
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error ?? "Could not load campaigns");
+        return data as CampaignSummary[];
+      })
+      .then((data) => {
+        setCampaigns(data);
+        setLoadError(null);
+      })
+      .catch((err: unknown) => {
+        setLoadError(err instanceof Error ? err.message : "Could not load campaigns");
+      });
+  }, []);
 
   useEffect(() => {
-    fetch("/api/campaigns")
-      .then((r) => r.json())
-      .then(setCampaigns);
-  }, []);
+    load();
+  }, [load]);
 
   return (
     <div className="flex flex-1 flex-col bg-zinc-50 dark:bg-black">
@@ -50,7 +67,19 @@ export default function Home() {
           </Link>
         </div>
 
-        {campaigns === null ? (
+        {loadError ? (
+          <div>
+            <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
+              {loadError}
+            </p>
+            <button
+              onClick={load}
+              className="mt-3 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            >
+              Try again
+            </button>
+          </div>
+        ) : campaigns === null ? (
           <p className="text-sm text-zinc-500">Loading…</p>
         ) : campaigns.length === 0 ? (
           <div className="rounded-lg border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">

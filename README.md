@@ -68,6 +68,27 @@ A failed request is **not** proof of a gap. Network errors, timeouts, TLS failur
 
 Stages move forward freely (skipping is allowed), one step back is allowed to fix a mistake, any lead can be marked `DEAD`, and a dead lead can only be reopened to `NEW` or `QUALIFIED` (`src/lib/crm.ts`). Every stage change is stored in `StageChange`.
 
+The stage buttons on a lead apply those same rules, so a move the API would reject is shown as unavailable rather than failing on click. A lead's full `StageChange` log is listed under **Stage history**.
+
+## What the UI shows
+
+Everything a scan concluded is visible, including how sure it was:
+
+- **Scan history** per campaign — the last five runs with status, duration, how
+  many records were found, created, refreshed and skipped, and the error for a
+  failed run. A failed scan still lists the leads from the last good one.
+- **Site status** per lead (`None listed`, `Needs work`, `Inconclusive`,
+  `Looks fine`). `Inconclusive` means a check failed, not that the site is bad,
+  and `None listed` means the listing has no website — the business may still
+  have one.
+- **Certainty on every gap**, in the campaign table as well as the lead page.
+  An `UNCERTAIN` signal is always marked `(unverified)`, so a failed request is
+  never presented as a proven gap.
+- **Leads that stopped appearing.** Scans never delete, so a lead whose
+  `lastSeenAt` predates the latest successful scan is marked *Not in last scan*
+  instead of silently vanishing.
+- **Earlier outreach drafts**, collapsed under the current one.
+
 ## Setup
 
 ```bash
@@ -109,8 +130,9 @@ src/lib/dedupe.ts    stable lead identity across reruns
 src/lib/crm.ts       allowed CRM stage transitions
 src/lib/leads.ts     stage/notes updates with history
 src/lib/outreach.ts  Claude-drafted outreach messages (output validated with Zod)
+src/lib/display.ts   shared labels/formatting for scan-derived state
 src/app/api/         REST endpoints the UI calls
 src/app/             campaign dashboard, campaign detail, lead detail/CRM
 prisma/schema.prisma data model: Campaign, ScanRun, Business, GapSignal, Outreach, StageChange
-tests/               Vitest suites (scoring, detection, fetcher, scans, CRM, migration)
+tests/               Vitest suites (scoring, detection, fetcher, scans, CRM, migration, display)
 ```
