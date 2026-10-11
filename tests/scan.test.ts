@@ -2,7 +2,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DetectableBusiness, DetectedSignal, PresenceAnalysis } from "@/lib/detect";
 import {
   CampaignNotFoundError,
+  claimCampaignScan,
   DiscoveryError,
+  executeCampaignScan,
   runCampaignScan,
   ScanConflictError,
   type ScanDeps,
@@ -449,5 +451,88 @@ describe("a scan that crashed", () => {
     const old = await prisma.scanRun.findUniqueOrThrow({ where: { id: crashed.id } });
     expect(old).toMatchObject({ status: "FAILED", errorMessage: "Interrupted before it finished" });
     expect((await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } })).status).toBe("DONE");
+  });
+});
+
+describe("claiming a scan separately from running it", () => {
+  // The route claims inside the request and runs the scan after the response,
+  // so these two halves must hold on their own, not only in composition.
+
+  it("refuses a campaign that does not exist", async () => {
+    await expect(claimCampaignScan(prisma, "no-such-campaign")).rejects.toBeInstanceOf(CampaignNotFoundError);
+  });
+
+  it("returns the scan id and what the scan needs to run", async () => {
+    const claim = await claimCampaignScan(prisma, campaignId);
+    expect(claim).toMatchObject({ campaignId, source: "OSM", region: "Prizren", niche: "dentist" });
+    expect(claim.scanId).toBeTruthy();
+  });
+
+  it("marks the campaign RUNNING and opens a RUNNING scan", async () => {
+    const claim = await claimCampaignScan(prisma, campaignId);
+    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    const run = await prisma.scanRun.findUniqueOrThrow({ where: { id: claim.scanId } });
+    expect(campaign.status).toBe("RUNNING");
+    expect(run.status).toBe("RUNNING");
+    expect(run.finishedAt).toBeNull();
+  });
+
+  it("refuses a second claim while the first still holds the campaign", async () => {
+    await claimCampaignScan(prisma, campaignId);
+    await expect(claimCampaignScan(prisma, campaignId)).rejects.toBeInstanceOf(ScanConflictError);
+  });
+
+  it("lets a stale claim be taken over, and fails the run it abandoned", async () => {
+    const abandoned = await claimCampaignScan(prisma, campaignId);
+    // Far enough past the staleness window that the campaign is reclaimable.
+    const later = () => new Date(Date.now() + 60 * 60 * 1000);
+    const retaken = await claimCampaignScan(prisma, campaignId, { now: later });
+
+    expect(retaken.scanId).not.toBe(abandoned.scanId);
+    const previous = await prisma.scanRun.findUniqueOrThrow({ where: { id: abandoned.scanId } });
+    expect(previous.status).toBe("FAILED");
+    expect(previous.errorMessage).toMatch(/interrupted/i);
+    expect(previous.finishedAt).not.toBeNull();
+  });
+
+  it("completes the scan when run against its own claim", async () => {
+    const claim = await claimCampaignScan(prisma, campaignId);
+    const outcome = await executeCampaignScan(prisma, claim, {
+      getSource: returning([biz(1), biz(2, { website: "https://example.com" })]),
+      analyze: fakeAnalyze,
+    });
+
+    expect(outcome).toMatchObject({ scanId: claim.scanId, found: 2, created: 2, updated: 0 });
+    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(campaign.status).toBe("DONE");
+    expect(await leads(campaignId)).toHaveLength(2);
+  });
+
+  it("records a failure on the claim's own run, keeping earlier leads", async () => {
+    // Seed a good scan, then claim and fail a second one.
+    await scan(campaignId, returning([biz(1)]));
+    const claim = await claimCampaignScan(prisma, campaignId);
+    await expect(
+      executeCampaignScan(prisma, claim, { getSource: failing(), analyze: fakeAnalyze })
+    ).rejects.toBeInstanceOf(DiscoveryError);
+
+    const run = await prisma.scanRun.findUniqueOrThrow({ where: { id: claim.scanId } });
+    const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+    expect(run.status).toBe("FAILED");
+    expect(run.finishedAt).not.toBeNull();
+    expect(campaign.status).toBe("FAILED");
+    // The point of the whole design: the earlier lead survives.
+    expect(await leads(campaignId)).toHaveLength(1);
+  });
+
+  it("frees the campaign for a normal rerun after a deferred scan failed", async () => {
+    const claim = await claimCampaignScan(prisma, campaignId);
+    await expect(
+      executeCampaignScan(prisma, claim, { getSource: failing(), analyze: fakeAnalyze })
+    ).rejects.toBeInstanceOf(DiscoveryError);
+
+    // FAILED is not RUNNING, so the next claim succeeds without waiting out
+    // the staleness window.
+    await expect(scan(campaignId, returning([biz(1)]))).resolves.toMatchObject({ created: 1 });
   });
 });

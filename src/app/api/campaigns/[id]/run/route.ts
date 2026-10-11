@@ -1,13 +1,36 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { CampaignNotFoundError, DiscoveryError, runCampaignScan, ScanConflictError } from "@/lib/scan";
+import {
+  CampaignNotFoundError,
+  claimCampaignScan,
+  executeCampaignScan,
+  ScanConflictError,
+} from "@/lib/scan";
 import { getSource } from "@/lib/sources";
 
+/**
+ * Give the scan room where the platform honours it. A campaign can return 60
+ * leads, each costing up to two URL candidates at an 8s deadline with one
+ * retry, five at a time — minutes, not seconds.
+ */
+export const maxDuration = 300;
+
+/**
+ * Starts a scan and answers immediately; the client polls the campaign for the
+ * result. The scan used to run inside this request, so a long one outlived it:
+ * the work completed and ScanRun recorded it, but the browser lost the answer
+ * with no way to recover it.
+ *
+ * The claim stays synchronous because it decides the status code — 404 for a
+ * missing campaign, 409 when another scan holds it. Only the scan body is
+ * deferred, via `after`, which runs it once the response has been sent.
+ */
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
+  let claim;
   try {
-    await runCampaignScan(prisma, id, { getSource });
+    claim = await claimCampaignScan(prisma, id);
   } catch (err) {
     if (err instanceof CampaignNotFoundError) {
       return NextResponse.json({ error: err.message }, { status: 404 });
@@ -15,17 +38,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     if (err instanceof ScanConflictError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
-    // Leads saved by earlier scans are untouched; the campaign page still shows them.
-    const status = err instanceof DiscoveryError ? 502 : 500;
-    return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error" }, { status });
+    throw err;
   }
 
-  const result = await prisma.campaign.findUnique({
-    where: { id },
-    include: {
-      businesses: { orderBy: { score: "desc" }, include: { signals: true } },
-      scans: { orderBy: { startedAt: "desc" }, take: 5 },
-    },
+  after(async () => {
+    try {
+      await executeCampaignScan(prisma, claim, { getSource });
+    } catch (err) {
+      // executeCampaignScan already recorded this on the ScanRun and the
+      // campaign; nothing is listening for the rejection, so log and stop.
+      console.error(`Scan ${claim.scanId} failed`, err);
+    }
   });
-  return NextResponse.json(result);
+
+  // 202: accepted and started, not finished. The campaign is RUNNING and the
+  // client watches GET /api/campaigns/[id] until it isn't.
+  return NextResponse.json({ scanId: claim.scanId, status: "RUNNING" }, { status: 202 });
 }

@@ -17,6 +17,9 @@ import {
 const WEBSITE_STATUSES: WebsiteStatus[] = ["NONE_FOUND", "NEEDS_WORK", "NEEDS_CHECK", "GOOD"];
 type SortKey = "score" | "name";
 
+/** How often to re-read a campaign while its scan is running. */
+const SCAN_POLL_MS = 2000;
+
 const CONTROL_CLASS =
   "rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
 
@@ -91,7 +94,7 @@ export default function CampaignDetailPage() {
   // Promise callbacks rather than async/await: state must not be set on the
   // effect's synchronous path (react-hooks/set-state-in-effect).
   const load = useCallback(() => {
-    fetch(`/api/campaigns/${id}`)
+    return fetch(`/api/campaigns/${id}`)
       .then(async (res) => {
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error(data?.error ?? "Could not load this campaign");
@@ -110,7 +113,17 @@ export default function CampaignDetailPage() {
     load();
   }, [load]);
 
+  // The scan outlives the request that started it, so its result arrives by
+  // polling rather than in the POST response. Watch until the campaign leaves
+  // RUNNING; returning to that state later simply restarts this.
+  useEffect(() => {
+    if (campaign?.status !== "RUNNING") return;
+    const timer = setInterval(load, SCAN_POLL_MS);
+    return () => clearInterval(timer);
+  }, [campaign?.status, load]);
+
   const latestScan = campaign?.scans?.[0] ?? null;
+  const scanning = campaign?.status === "RUNNING";
 
   /**
    * A lead last seen before the most recent successful scan started was not
@@ -149,11 +162,13 @@ export default function CampaignDetailPage() {
       const res = await fetch(`/api/campaigns/${id}/run`, { method: "POST" });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? "Run failed");
-      setCampaign(data);
+      // 202 Accepted: the scan has started, not finished. Reload so the
+      // campaign reads RUNNING, which starts the poll above.
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
       // A failed or refused run leaves saved leads intact; show their current state.
-      load();
+      await load();
     } finally {
       setRunning(false);
     }
@@ -225,17 +240,32 @@ export default function CampaignDetailPage() {
           </p>
         )}
 
-        {latestScan && (
-          <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
-            Last scan {formatTimestamp(latestScan.startedAt)} ·{" "}
-            <span className="font-medium text-zinc-700 dark:text-zinc-300">{latestScan.found} found</span>,{" "}
-            {latestScan.created} new, {latestScan.updated} refreshed
-            {latestScan.skipped > 0 && (
-              <span title="Records with no usable name, or duplicates of another record in the same batch.">
-                , {latestScan.skipped} skipped
-              </span>
-            )}
-          </p>
+        {scanning ? (
+          <div className="mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+            <p>
+              Scanning since {formatTimestamp(latestScan?.startedAt)}. Checking each website takes a few
+              seconds, so a large campaign can run for minutes.
+            </p>
+            {/* The scan no longer depends on this request, so saying so is
+                accurate as well as reassuring. */}
+            <p className="mt-1 text-amber-700 dark:text-amber-400">
+              It runs on the server — you can leave this page and come back. Any leads below are from the
+              last scan and stay untouched until this one finishes.
+            </p>
+          </div>
+        ) : (
+          latestScan && (
+            <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+              Last scan {formatTimestamp(latestScan.startedAt)} ·{" "}
+              <span className="font-medium text-zinc-700 dark:text-zinc-300">{latestScan.found} found</span>,{" "}
+              {latestScan.created} new, {latestScan.updated} refreshed
+              {latestScan.skipped > 0 && (
+                <span title="Records with no usable name, or duplicates of another record in the same batch.">
+                  , {latestScan.skipped} skipped
+                </span>
+              )}
+            </p>
+          )
         )}
 
         {campaign.businesses.length === 0 ? (
