@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { canTransition, CRM_STAGES, isCrmStage } from "@/lib/crm";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
@@ -65,6 +65,11 @@ export default function LeadDetailPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [notesState, setNotesState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  /**
+   * Whether the notes box holds edits the server hasn't accepted. A ref, not
+   * state: `load` must read it without being rebuilt every keystroke.
+   */
+  const notesDirty = useRef(false);
 
   // Promise callbacks rather than async/await: state must not be set on the
   // effect's synchronous path (react-hooks/set-state-in-effect).
@@ -77,7 +82,9 @@ export default function LeadDetailPage() {
       })
       .then((data) => {
         setBusiness(data);
-        setNotes(data.notes ?? "");
+        // Never overwrite notes the user is still editing. A reload follows
+        // every stage change and draft, and would otherwise discard them.
+        if (!notesDirty.current) setNotes(data.notes ?? "");
         setLoadError(null);
       })
       .catch((err: unknown) => {
@@ -105,6 +112,9 @@ export default function LeadDetailPage() {
   }
 
   async function updateStage(crmStage: string) {
+    // Clicking a stage doesn't blur the notes box, so persist what's in it
+    // first. If this save fails the field stays dirty and keeps the text.
+    if (notesDirty.current) await saveNotes();
     const res = await fetch(`/api/leads/${id}/status`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -120,7 +130,10 @@ export default function LeadDetailPage() {
   }
 
   async function saveNotes() {
-    if (business && notes === (business.notes ?? "")) return;
+    if (business && notes === (business.notes ?? "")) {
+      notesDirty.current = false;
+      return;
+    }
     setNotesState("saving");
     try {
       const res = await fetch(`/api/leads/${id}/status`, {
@@ -130,8 +143,11 @@ export default function LeadDetailPage() {
       });
       if (!res.ok) throw new Error("save failed");
       setBusiness((prev) => (prev ? { ...prev, notes } : prev));
+      notesDirty.current = false;
       setNotesState("saved");
     } catch {
+      // Left dirty on purpose: the text stays in the box and a reload won't
+      // replace it, so the user can retry instead of losing the note.
       setNotesState("error");
     }
   }
@@ -329,6 +345,7 @@ export default function LeadDetailPage() {
             value={notes}
             onChange={(e) => {
               setNotes(e.target.value);
+              notesDirty.current = true;
               setNotesState("idle");
             }}
             onBlur={saveNotes}

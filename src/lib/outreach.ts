@@ -111,20 +111,50 @@ export interface OutreachDeps {
 
 let client: Anthropic | undefined;
 
-async function createMessageWithClaude(prompt: string): Promise<MessageLike> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new OutreachError("not_configured", "ANTHROPIC_API_KEY is not set");
+/**
+ * draftSchema permits a subject (200), open line (600) and body (3000
+ * characters) — roughly 1,100 tokens once JSON-escaped. A 1024 budget sat
+ * below the schema's own ceiling, so a long draft was truncated and reported
+ * as "stopped early" rather than returned.
+ */
+export const MAX_DRAFT_TOKENS = 4000;
+
+/**
+ * Distinguishes "there are no usable credentials" from an upstream fault.
+ *
+ * The SDK resolves credentials while building the request and throws before
+ * anything is sent, so a failure that never became an APIError means we never
+ * reached the API; a 401 means it rejected what we sent. Network faults are
+ * APIConnectionError, which is an APIError, so they stay upstream.
+ */
+function asCredentialError(err: unknown): unknown {
+  if (err instanceof Anthropic.AuthenticationError || !(err instanceof Anthropic.APIError)) {
+    return new OutreachError(
+      "not_configured",
+      "No usable Claude credentials. Set ANTHROPIC_API_KEY, or sign in with `ant auth login`."
+    );
   }
+  return err;
+}
+
+async function createMessageWithClaude(prompt: string): Promise<MessageLike> {
+  // No env pre-check: the SDK resolves ANTHROPIC_API_KEY, then
+  // ANTHROPIC_AUTH_TOKEN, then an `ant auth login` profile. Testing one
+  // variable here rejected setups the SDK would have authenticated.
   client ??= new Anthropic();
-  return client.messages.create({
-    model: "claude-opus-4-8",
-    max_tokens: 1024,
-    output_config: {
-      effort: "medium",
-      format: { type: "json_schema", schema: RESPONSE_SCHEMA },
-    },
-    messages: [{ role: "user", content: prompt }],
-  });
+  try {
+    return await client.messages.create({
+      model: "claude-opus-4-8",
+      max_tokens: MAX_DRAFT_TOKENS,
+      output_config: {
+        effort: "medium",
+        format: { type: "json_schema", schema: RESPONSE_SCHEMA },
+      },
+      messages: [{ role: "user", content: prompt }],
+    });
+  } catch (err) {
+    throw asCredentialError(err);
+  }
 }
 
 export async function draftOutreach(

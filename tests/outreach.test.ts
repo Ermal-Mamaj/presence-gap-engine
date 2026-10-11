@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DetectedSignal } from "@/lib/detect";
-import { buildPrompt, citableSignals, draftOutreach, OutreachError, parseDraft } from "@/lib/outreach";
+import { buildPrompt, citableSignals, draftOutreach, MAX_DRAFT_TOKENS, OutreachError, parseDraft } from "@/lib/outreach";
 
 const verified: DetectedSignal = {
   key: "no_mobile_viewport",
@@ -152,5 +152,15 @@ describe("draftOutreach", () => {
     } finally {
       if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
     }
+  });
+
+  it("budgets enough output tokens for the largest draft the schema allows", () => {
+    // draftSchema caps subject at 200, open_line at 600 and body at 3000
+    // characters. At a deliberately pessimistic 3 characters per token (English
+    // prose runs nearer 4, and JSON escaping only adds), the largest valid
+    // draft must still fit. A 1024 budget did not, so a long draft died as
+    // stop_reason max_tokens instead of being returned.
+    const worstCaseTokens = Math.ceil((200 + 600 + 3000) / 3);
+    expect(MAX_DRAFT_TOKENS).toBeGreaterThan(worstCaseTokens);
   });
 });
