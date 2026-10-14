@@ -3,6 +3,11 @@ import type { BusinessSource, RawBusiness, SearchBox } from "./types";
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 
+// Overpass is told to give up after 25s server-side (see buildOverpassQuery);
+// the client waits a little longer so it sees that answer instead of a hang.
+const NOMINATIM_TIMEOUT_MS = 15_000;
+const OVERPASS_TIMEOUT_MS = 40_000;
+
 // Best-effort niche -> OSM tag mapping. Falls back to a free-text name/shop search
 // when the niche isn't in the table, since OSM's tagging vocabulary is huge and
 // inconsistent.
@@ -45,16 +50,22 @@ async function geocodeRegion(region: string): Promise<{ lat: number; lon: number
       // Nominatim usage policy requires a descriptive User-Agent.
       "User-Agent": "presence-gap-engine/0.1 (lead-research tool)",
     },
+    signal: AbortSignal.timeout(NOMINATIM_TIMEOUT_MS),
   });
-  if (!res.ok) return null;
+  if (!res.ok) throw new Error(`Nominatim error: ${res.status} ${res.statusText}`);
   const results = (await res.json()) as Array<{
     lat: string;
     lon: string;
     boundingbox: [string, string, string, string];
   }>;
-  if (!results.length) return null;
+  if (!Array.isArray(results) || !results.length) return null;
   const r = results[0];
-  return { lat: parseFloat(r.lat), lon: parseFloat(r.lon), boundingbox: r.boundingbox };
+  const lat = parseFloat(r.lat);
+  const lon = parseFloat(r.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Array.isArray(r.boundingbox) || r.boundingbox.length !== 4) {
+    throw new Error("Nominatim returned an unexpected response");
+  }
+  return { lat, lon, boundingbox: r.boundingbox };
 }
 
 function buildOverpassQuery(bbox: [string, string, string, string], tags: string[]) {
@@ -133,11 +144,21 @@ export const osmSource: BusinessSource = {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: query,
+      signal: AbortSignal.timeout(OVERPASS_TIMEOUT_MS),
     });
     if (!res.ok) {
       throw new Error(`Overpass API error: ${res.status} ${res.statusText}`);
     }
-    const data = (await res.json()) as { elements: OverpassElement[] };
+    const data = (await res.json()) as { elements?: OverpassElement[]; remark?: string };
+    if (!Array.isArray(data?.elements)) {
+      throw new Error("Overpass API returned an unexpected response");
+    }
+    // On overload or timeout Overpass still answers 200, with a remark and
+    // whatever it managed to collect. A silently truncated list would look
+    // like a real (small) result, so treat it as a failure.
+    if (data.remark && /runtime error|timed out|out of memory/i.test(data.remark)) {
+      throw new Error(`Overpass API could not finish the query: ${data.remark}`);
+    }
 
     const businesses: RawBusiness[] = [];
     const seen = new Set<string>();

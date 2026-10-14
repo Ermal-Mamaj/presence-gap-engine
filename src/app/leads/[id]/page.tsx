@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { safeHttpUrl } from "@/lib/url";
 
 interface GapSignal {
   id: string;
   key: string;
   label: string;
   severity: number;
+  certainty: string;
   detail: string | null;
 }
 
@@ -79,7 +81,13 @@ export default function LeadDetailPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ crmStage }),
     });
-    if (res.ok) load();
+    if (res.ok) {
+      setError(null);
+      load();
+    } else {
+      const data = await res.json().catch(() => null);
+      setError(data?.error ?? "Could not change the stage");
+    }
   }
 
   async function saveNotes() {
@@ -111,11 +119,14 @@ export default function LeadDetailPage() {
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
               {business.address ?? "No address"} {business.phone ? `· ${business.phone}` : ""}
             </p>
-            {business.website && (
-              <a href={business.website} target="_blank" rel="noreferrer" className="text-sm text-sky-600 hover:underline dark:text-sky-400">
-                {business.website}
-              </a>
-            )}
+            {business.website &&
+              (safeHttpUrl(business.website) ? (
+                <a href={safeHttpUrl(business.website)!} target="_blank" rel="noreferrer" className="text-sm text-sky-600 hover:underline dark:text-sky-400">
+                  {business.website}
+                </a>
+              ) : (
+                <p className="text-sm text-zinc-500">{business.website}</p>
+              ))}
           </div>
           <div className="text-right">
             <p className="text-xs text-zinc-500">Score</p>
@@ -125,6 +136,7 @@ export default function LeadDetailPage() {
 
         <section className="mt-6">
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">CRM stage</h2>
+          {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
           <div className="mt-2 flex flex-wrap gap-2">
             {STAGES.map((s) => (
               <button
@@ -151,6 +163,7 @@ export default function LeadDetailPage() {
               {business.signals.map((s) => (
                 <li key={s.id} className="text-sm text-zinc-700 dark:text-zinc-300">
                   <span className="font-mono text-xs text-zinc-400">[{s.severity}]</span> {s.label}
+                  {s.certainty === "UNCERTAIN" && <span className="text-amber-600 dark:text-amber-400"> (unverified)</span>}
                   {s.detail && <span className="text-zinc-400"> — {s.detail}</span>}
                 </li>
               ))}

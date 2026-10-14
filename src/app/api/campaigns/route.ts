@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+
+const createCampaignSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  region: z.string().trim().min(1).max(200),
+  niche: z.string().trim().min(1).max(100),
+  source: z.enum(["OSM", "GOOGLE_MAPS_SCRAPER"]),
+});
 
 export async function GET() {
   const campaigns = await prisma.campaign.findMany({
@@ -10,18 +18,21 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const { name, region, niche, source } = body;
-
-  if (!name || !region || !niche) {
-    return NextResponse.json({ error: "name, region, and niche are required" }, { status: 400 });
-  }
-  if (source !== "OSM" && source !== "GOOGLE_MAPS_SCRAPER") {
-    return NextResponse.json({ error: "source must be OSM or GOOGLE_MAPS_SCRAPER" }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Request body must be JSON" }, { status: 400 });
   }
 
-  const campaign = await prisma.campaign.create({
-    data: { name, region, niche, source },
-  });
+  const parsed = createCampaignSchema.safeParse(body);
+  if (!parsed.success) {
+    const missing = parsed.error.issues.some((i) => i.path[0] === "source")
+      ? "source must be OSM or GOOGLE_MAPS_SCRAPER"
+      : "name, region, and niche are required (name up to 120, region up to 200, niche up to 100 characters)";
+    return NextResponse.json({ error: missing }, { status: 400 });
+  }
+
+  const campaign = await prisma.campaign.create({ data: parsed.data });
   return NextResponse.json(campaign, { status: 201 });
 }

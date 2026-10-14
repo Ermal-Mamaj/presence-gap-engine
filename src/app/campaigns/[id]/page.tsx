@@ -72,6 +72,8 @@ export default function CampaignDetailPage() {
       setCampaign(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
+      // A failed or refused run leaves saved leads intact; show their current state.
+      load();
     } finally {
       setRunning(false);
     }

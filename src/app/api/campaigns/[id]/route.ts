@@ -10,6 +10,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
         orderBy: { score: "desc" },
         include: { signals: true },
       },
+      scans: { orderBy: { startedAt: "desc" }, take: 5 },
     },
   });
   if (!campaign) {

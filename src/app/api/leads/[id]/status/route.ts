@@ -1,23 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-
-const VALID_STAGES = ["NEW", "QUALIFIED", "CONTACTED", "REPLIED", "CONVERTED", "DELIVERED", "RETAINED", "DEAD"];
+import { InvalidTransitionError, LeadNotFoundError, leadUpdateSchema, updateLead } from "@/lib/leads";
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const body = await req.json();
-  const { crmStage, notes } = body;
 
-  if (crmStage && !VALID_STAGES.includes(crmStage)) {
-    return NextResponse.json({ error: `crmStage must be one of ${VALID_STAGES.join(", ")}` }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Request body must be JSON" }, { status: 400 });
+  }
+  const parsed = leadUpdateSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Invalid request", issues: parsed.error.issues },
+      { status: 400 }
+    );
   }
 
-  const business = await prisma.business.update({
-    where: { id },
-    data: {
-      ...(crmStage ? { crmStage } : {}),
-      ...(notes !== undefined ? { notes } : {}),
-    },
-  });
-  return NextResponse.json(business);
+  try {
+    return NextResponse.json(await updateLead(prisma, id, parsed.data));
+  } catch (err) {
+    if (err instanceof LeadNotFoundError) return NextResponse.json({ error: err.message }, { status: 404 });
+    if (err instanceof InvalidTransitionError) return NextResponse.json({ error: err.message }, { status: 409 });
+    throw err;
+  }
 }

@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { z } from "zod";
 import type { DetectedSignal } from "./detect";
-
-const client = new Anthropic();
 
 export interface OutreachTarget {
   name: string;
@@ -15,6 +14,18 @@ export interface OutreachDraft {
   openLine: string;
   subject: string;
   body: string;
+}
+
+export type OutreachErrorKind = "no_verified_gaps" | "not_configured" | "invalid_response" | "upstream";
+
+export class OutreachError extends Error {
+  constructor(
+    readonly kind: OutreachErrorKind,
+    message: string
+  ) {
+    super(message);
+    this.name = "OutreachError";
+  }
 }
 
 const RESPONSE_SCHEMA = {
@@ -37,16 +48,46 @@ const RESPONSE_SCHEMA = {
   additionalProperties: false,
 };
 
-export async function draftOutreach(
-  target: OutreachTarget,
-  signals: DetectedSignal[]
-): Promise<OutreachDraft> {
-  const signalLines = signals.map((s) => `- ${s.label}${s.detail ? ` (${s.detail})` : ""}`).join("\n");
+// The JSON schema above is a request to the model, not a guarantee, so the
+// response is checked again before anything is stored.
+const draftSchema = z.object({
+  open_line: z.string().trim().min(1).max(600),
+  subject: z.string().trim().min(1).max(200),
+  body: z.string().trim().min(1).max(3000),
+});
 
-  const prompt = `You are helping a small web-services freelancer write a cold outreach email to a local business.
+export function parseDraft(text: string): OutreachDraft {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new OutreachError("invalid_response", "The model did not return valid JSON");
+  }
+  const parsed = draftSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new OutreachError("invalid_response", "The model response did not match the expected draft format");
+  }
+  return { openLine: parsed.data.open_line, subject: parsed.data.subject, body: parsed.data.body };
+}
+
+/**
+ * Only verified, scoring observations may be asserted to a business. An
+ * uncertain one ("website did not load") might be our network, and telling an
+ * owner their site is down when it isn't would sink the message.
+ */
+export function citableSignals(signals: DetectedSignal[]): DetectedSignal[] {
+  return signals.filter((s) => s.certainty === "VERIFIED" && s.severity > 0);
+}
+
+export function buildPrompt(target: OutreachTarget, signals: DetectedSignal[]): string {
+  const signalLines = signals.map((s) => `- ${s.label}${s.detail ? ` (${s.detail})` : ""}`).join("\n");
+  const rating = typeof target.rating === "number" && target.rating > 0 ? target.rating : null;
+  const reviews = typeof target.reviewCount === "number" && target.reviewCount > 0 ? target.reviewCount : null;
+
+  return `You are helping a small web-services freelancer write a cold outreach email to a local business.
 
 Business: ${target.name}
-${target.address ? `Address: ${target.address}\n` : ""}${target.website ? `Website: ${target.website}\n` : ""}${target.rating ? `Rating: ${target.rating}\n` : ""}${target.reviewCount ? `Reviews: ${target.reviewCount}\n` : ""}
+${target.address ? `Address: ${target.address}\n` : ""}${target.website ? `Website: ${target.website}\n` : ""}${rating !== null ? `Rating: ${rating}\n` : ""}${reviews !== null ? `Reviews: ${reviews}\n` : ""}
 Observed gaps (publicly visible, true, specific):
 ${signalLines}
 
@@ -56,8 +97,26 @@ Write a short, specific, non-templated outreach email. Rules:
 - Keep it short (under 120 words), plain, no corporate tone, no emojis, no exclamation points.
 - Offer to fix it, not a hard pitch. End with a low-friction ask (a quick reply or call).
 - Do not invent facts not present in the signals above.`;
+}
 
-  const response = await client.messages.create({
+interface MessageLike {
+  content: Array<{ type: string; text?: string }>;
+  stop_reason?: string | null;
+}
+
+export interface OutreachDeps {
+  /** Replaceable for tests. */
+  createMessage?: (prompt: string) => Promise<MessageLike>;
+}
+
+let client: Anthropic | undefined;
+
+async function createMessageWithClaude(prompt: string): Promise<MessageLike> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new OutreachError("not_configured", "ANTHROPIC_API_KEY is not set");
+  }
+  client ??= new Anthropic();
+  return client.messages.create({
     model: "claude-opus-4-8",
     max_tokens: 1024,
     output_config: {
@@ -66,12 +125,35 @@ Write a short, specific, non-templated outreach email. Rules:
     },
     messages: [{ role: "user", content: prompt }],
   });
+}
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
-    throw new Error("No text response from outreach draft generation");
+export async function draftOutreach(
+  target: OutreachTarget,
+  signals: DetectedSignal[],
+  deps: OutreachDeps = {}
+): Promise<OutreachDraft> {
+  const citable = citableSignals(signals);
+  if (citable.length === 0) {
+    throw new OutreachError(
+      "no_verified_gaps",
+      "This lead has no verified gap to mention yet. Check its website first, then draft."
+    );
   }
-  const parsed = JSON.parse(textBlock.text) as { open_line: string; subject: string; body: string };
 
-  return { openLine: parsed.open_line, subject: parsed.subject, body: parsed.body };
+  let response: MessageLike;
+  try {
+    response = await (deps.createMessage ?? createMessageWithClaude)(buildPrompt(target, citable));
+  } catch (err) {
+    if (err instanceof OutreachError) throw err;
+    throw new OutreachError("upstream", err instanceof Error ? err.message : "Draft generation failed");
+  }
+
+  if (response.stop_reason === "max_tokens" || response.stop_reason === "refusal") {
+    throw new OutreachError("invalid_response", `Draft generation stopped early (${response.stop_reason})`);
+  }
+  const textBlock = response.content.find((b) => b.type === "text");
+  if (!textBlock?.text) {
+    throw new OutreachError("invalid_response", "No text response from outreach draft generation");
+  }
+  return parseDraft(textBlock.text);
 }
