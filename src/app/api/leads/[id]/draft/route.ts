@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fromStoredSignal } from "@/lib/detect";
+import { draftForLead } from "@/lib/drafting";
+import { OutreachError } from "@/lib/outreach";
+import { DRAFT_CHANNELS, isDraftChannel } from "@/lib/outreachOptions";
 import { prisma } from "@/lib/prisma";
-import { draftOutreach, OutreachError } from "@/lib/outreach";
-import { defaultChannel, DEFAULT_LANGUAGE, DRAFT_CHANNELS, isDraftChannel, isDraftLanguage } from "@/lib/outreachOptions";
 
 const STATUS_BY_KIND = {
   no_verified_gaps: 422,
@@ -29,39 +29,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!business) {
     return NextResponse.json({ error: "Business not found" }, { status: 404 });
   }
-  const channel = requested ?? defaultChannel(business);
-  const language = isDraftLanguage(business.campaign.language) ? business.campaign.language : DEFAULT_LANGUAGE;
 
-  let draft;
   try {
-    draft = await draftOutreach(
-      {
-        name: business.name,
-        address: business.address,
-        website: business.website,
-        rating: business.rating,
-        reviewCount: business.reviewCount,
-      },
-      business.signals.map(fromStoredSignal),
-      {},
-      { channel, language }
-    );
+    return NextResponse.json(await draftForLead(prisma, business, { channel: requested }), { status: 201 });
   } catch (err) {
     if (err instanceof OutreachError) {
       return NextResponse.json({ error: err.message }, { status: STATUS_BY_KIND[err.kind] });
     }
     return NextResponse.json({ error: "Failed to draft outreach" }, { status: 500 });
   }
-
-  const outreach = await prisma.outreach.create({
-    data: {
-      businessId: business.id,
-      channel,
-      subject: draft.subject,
-      openLine: draft.openLine,
-      body: draft.body,
-    },
-  });
-
-  return NextResponse.json(outreach, { status: 201 });
 }

@@ -12,7 +12,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     include: {
       businesses: {
         orderBy: { score: "desc" },
-        include: { signals: true },
+        include: { signals: true, _count: { select: { outreach: true } } },
       },
       scans: { orderBy: { startedAt: "desc" }, take: 5 },
     },
