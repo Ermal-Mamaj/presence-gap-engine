@@ -70,6 +70,7 @@ interface ScanRun {
   created: number;
   updated: number;
   skipped: number;
+  deferred: number;
   startedAt: string;
   finishedAt: string | null;
 }
@@ -286,6 +287,11 @@ export default function CampaignDetailPage() {
               {latestScan.skipped > 0 && (
                 <span title="Records with no usable name, or duplicates of another record in the same batch.">
                   , {latestScan.skipped} skipped
+                </span>
+              )}
+              {latestScan.deferred > 0 && (
+                <span title="Every lead was saved. These websites were over the per-scan check limit; the next scan checks them first.">
+                  , {latestScan.deferred} website{latestScan.deferred === 1 ? "" : "s"} left for the next scan
                 </span>
               )}
             </p>
@@ -508,6 +514,9 @@ export default function CampaignDetailPage() {
                     <th className="px-4 py-2.5">New</th>
                     <th className="px-4 py-2.5">Refreshed</th>
                     <th className="px-4 py-2.5">Skipped</th>
+                    <th className="px-4 py-2.5" title="Websites over the per-scan check limit, left for the next scan">
+                      Sites deferred
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200 bg-white dark:divide-zinc-800 dark:bg-zinc-950">
@@ -535,6 +544,7 @@ export default function CampaignDetailPage() {
                       <td className="px-4 py-2.5 font-mono text-zinc-700 dark:text-zinc-300">{s.created}</td>
                       <td className="px-4 py-2.5 font-mono text-zinc-700 dark:text-zinc-300">{s.updated}</td>
                       <td className="px-4 py-2.5 font-mono text-zinc-700 dark:text-zinc-300">{s.skipped}</td>
+                      <td className="px-4 py-2.5 font-mono text-zinc-700 dark:text-zinc-300">{s.deferred}</td>
                     </tr>
                   ))}
                 </tbody>

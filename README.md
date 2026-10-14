@@ -70,6 +70,17 @@ A campaign's scan (`src/lib/scan.ts`) is built so that running it again can neve
   survive there, and after moving to Postgres (see Setup) a scan still has to
   fit the platform's limit. Static export cannot work, because the app needs
   its API routes.
+- **Website checks are capped, leads are not.** A scan fetches at most 60
+  websites, because a check can take seconds, but a lead without a website
+  costs no request, so every lead the source returns is saved. OpenStreetMap
+  returns up to 200 per query. Websites over the limit wait for the next
+  scan, which checks never-checked sites first and then the least recently
+  checked, so a large campaign is covered over a few scans. A deferred site
+  that was checked before keeps that result; one that never was reads *Website
+  not checked yet*. The lead page says when its website was last checked, and
+  scan history counts the deferred sites. Until now a campaign was cut at 60
+  leads in whatever order the source returned them: about 20 of 80 dentists
+  in Tirana were never scored.
 - **Bad records are skipped, not fatal.** A record without a name is dropped; an impossible field (a rating of 47) becomes "unknown". If a source returns records but none are usable, the scan fails instead of silently saving nothing. An empty result is a valid result.
 
 ## Contact details

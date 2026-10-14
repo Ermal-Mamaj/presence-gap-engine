@@ -80,6 +80,7 @@ model ScanRun {
   created      Int        @default(0) // new leads added by this scan
   updated      Int        @default(0) // existing leads refreshed by this scan
   skipped      Int        @default(0) // invalid or duplicate records ignored
+  deferred     Int        @default(0) // websites over the per-scan check limit, left for the next scan
 
   startedAt    DateTime   @default(now())
   finishedAt   DateTime?
@@ -106,6 +107,7 @@ model Business {
   sourceRef     String?  // id/url from the originating source, for provenance
   dedupeKey     String   // stable identity within a campaign, see src/lib/dedupe.ts
   websiteStatus WebsiteStatus @default(NEEDS_CHECK)
+  siteCheckedAt DateTime? // when a scan last fetched the current website; null = not yet
   lastSeenAt    DateTime @default(now()) // last scan that returned this business
 
   score         Float    @default(0)

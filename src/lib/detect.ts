@@ -46,6 +46,7 @@ const WEBSITE_KEYS = new Set([
   "tls_error",
   "site_error",
   "site_not_checked",
+  "site_check_deferred",
   "site_unassessed",
   "not_https",
   "no_mobile_viewport",
@@ -227,6 +228,13 @@ function listingIsEmpty(business: DetectableBusiness): boolean {
   return !((business.rating ?? 0) > 0) && !((business.reviewCount ?? 0) > 0);
 }
 
+const THIN_LISTING: DetectedSignal = {
+  key: "thin_listing",
+  label: "Little to no online reviews/rating found",
+  severity: 10,
+  certainty: "VERIFIED",
+};
+
 /**
  * Checks only publicly observable signals: does a site exist, does it load,
  * is it served over HTTPS, does it look mobile-friendly, does it look stale.
@@ -262,20 +270,44 @@ export async function analyzePresence(
     }
   }
 
-  if (listingIsEmpty(business)) {
-    signals.push({
-      key: "thin_listing",
-      label: "Little to no online reviews/rating found",
-      severity: 10,
-      certainty: "VERIFIED",
-    });
-  }
+  if (listingIsEmpty(business)) signals.push({ ...THIN_LISTING });
 
   return {
     signals,
     websiteStatus: deriveWebsiteStatus(Boolean(website), signals),
     ...(contacts ? { contacts } : {}),
   };
+}
+
+/** A signal as the database stores it, where certainty is a plain string column. */
+export function fromStoredSignal(stored: {
+  key: string;
+  label: string;
+  severity: number;
+  certainty: string;
+  detail: string | null;
+}): DetectedSignal {
+  return {
+    key: stored.key,
+    label: stored.label,
+    severity: stored.severity,
+    // The column defaults to VERIFIED; only an explicit UNCERTAIN is uncertain.
+    certainty: stored.certainty === "UNCERTAIN" ? "UNCERTAIN" : "VERIFIED",
+    detail: stored.detail ?? undefined,
+  };
+}
+
+/**
+ * The analysis of a listing whose website a scan chose not to fetch yet. The
+ * listing-level signals still apply; the website is recorded as unchecked,
+ * which is inconclusive rather than a gap, so it adds nothing to the score.
+ */
+export function deferWebsiteCheck(business: DetectableBusiness, detail: string): PresenceAnalysis {
+  const signals: DetectedSignal[] = [
+    { key: "site_check_deferred", label: "Website not checked yet", severity: 0, certainty: "UNCERTAIN", detail },
+  ];
+  if (listingIsEmpty(business)) signals.push({ ...THIN_LISTING });
+  return { signals, websiteStatus: deriveWebsiteStatus(true, signals) };
 }
 
 export async function detectGaps(business: DetectableBusiness, deps?: DetectDeps): Promise<DetectedSignal[]> {

@@ -134,7 +134,9 @@ export function elementToBusiness(el: OverpassElement): RawBusiness | null {
 
 export const osmSource: BusinessSource = {
   id: "OSM",
-  async search({ region, niche, limit = 60 }: SearchBox): Promise<RawBusiness[]> {
+  // No lead cap of its own: the Overpass query returns at most 200 elements,
+  // and the scan caps the expensive part, website checks, itself.
+  async search({ region, niche, limit }: SearchBox): Promise<RawBusiness[]> {
     const tags = tagsForNiche(niche);
     if (!tags.length) {
       throw new Error(
@@ -177,7 +179,7 @@ export const osmSource: BusinessSource = {
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
       businesses.push(biz);
-      if (businesses.length >= limit) break;
+      if (limit !== undefined && businesses.length >= limit) break;
     }
     return businesses;
   },

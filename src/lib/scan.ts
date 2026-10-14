@@ -1,7 +1,13 @@
-import type { Business, Prisma, PrismaClient } from "@/generated/prisma/client";
+import type { Business, GapSignal, Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { SiteContacts } from "./contacts";
 import { dedupeKeyFor } from "./dedupe";
-import { analyzePresence, type DetectableBusiness, type PresenceAnalysis } from "./detect";
+import {
+  analyzePresence,
+  deferWebsiteCheck,
+  fromStoredSignal,
+  type DetectableBusiness,
+  type PresenceAnalysis,
+} from "./detect";
 import { computeScore } from "./score";
 import type { BusinessSource, RawBusiness } from "./sources/types";
 import { sanitizeRawBusiness } from "./sources/validate";
@@ -36,6 +42,11 @@ export interface ScanDeps {
   concurrency?: number;
   /** A RUNNING campaign untouched for this long is treated as crashed. */
   staleAfterMs?: number;
+  /**
+   * Most websites one scan fetches. Leads past it are still saved; their
+   * websites wait for a later scan, which takes the least recently checked first.
+   */
+  maxWebsiteChecks?: number;
   now?: () => Date;
 }
 
@@ -45,9 +56,17 @@ export interface ScanOutcome {
   created: number;
   updated: number;
   skipped: number;
+  /** Websites over the check limit, left for a later scan. */
+  deferred: number;
 }
 
 const DEFAULT_CONCURRENCY = 5;
+/**
+ * Bounds scan time, not lead count. A check can take 8s per URL candidate with
+ * one retry, while a lead without a website costs no request at all, so only
+ * the websites are capped.
+ */
+export const DEFAULT_MAX_WEBSITE_CHECKS = 60;
 export const DEFAULT_STALE_AFTER_MS = 15 * 60 * 1000;
 const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 60_000 };
 
@@ -72,6 +91,32 @@ interface PreparedLead {
   dedupeKey: string;
   data: Omit<Prisma.BusinessUncheckedCreateInput, "campaignId" | "dedupeKey">;
   analysis: PresenceAnalysis;
+  /** The website was not fetched and its earlier assessment stands, signals included. */
+  keepSignals: boolean;
+}
+
+type ExistingLead = Business & { signals: GapSignal[] };
+
+/** Whether the stored assessment is of the website the lead has now. */
+function hasCurrentCheck(existing: ExistingLead | undefined, website: string | undefined): existing is ExistingLead {
+  return Boolean(existing?.siteCheckedAt) && existing?.website === website;
+}
+
+/**
+ * Picks the websites this scan fetches. Sites never checked (new leads, or a
+ * website that changed) go first, then the least recently checked, so a
+ * campaign with more sites than the limit is covered over successive scans
+ * instead of the same ones being re-checked every time.
+ */
+function selectWebsiteChecks(
+  candidates: { dedupeKey: string; website?: string; existing?: ExistingLead }[],
+  limit: number
+): Set<string> {
+  const lastChecked = (c: (typeof candidates)[number]) =>
+    hasCurrentCheck(c.existing, c.website) ? c.existing.siteCheckedAt!.getTime() : -Infinity;
+  // Array.prototype.sort is stable, so ties keep the source's order.
+  const ordered = [...candidates].sort((a, b) => lastChecked(a) - lastChecked(b));
+  return new Set(ordered.slice(0, Math.max(0, limit)).map((c) => c.dedupeKey));
 }
 
 /**
@@ -229,22 +274,58 @@ export async function executeCampaignScan(
       throw new DiscoveryError(`Source returned ${rawResults.length} records but none were usable`);
     }
 
-    const existingRows = await prisma.business.findMany({ where: { campaignId } });
+    const existingRows = await prisma.business.findMany({ where: { campaignId }, include: { signals: true } });
     const existingByKey = new Map(existingRows.map((row) => [row.dedupeKey, row]));
 
+    const entries = [...unique.entries()].map(([dedupeKey, raw]) => {
+      const existing = existingByKey.get(dedupeKey);
+      const listing = mergeWithExisting(raw, existing);
+      return { dedupeKey, raw, existing, listing, website: listing.website?.trim() || undefined };
+    });
+    const withWebsite = entries.filter((e) => e.website);
+    const limit = deps.maxWebsiteChecks ?? DEFAULT_MAX_WEBSITE_CHECKS;
+    const toCheck = selectWebsiteChecks(
+      withWebsite.map((e) => ({ dedupeKey: e.dedupeKey, website: e.listing.website, existing: e.existing })),
+      limit
+    );
+    const deferred = withWebsite.length - toCheck.size;
+
     const prepared = await mapWithConcurrency(
-      [...unique.entries()],
+      entries,
       deps.concurrency ?? DEFAULT_CONCURRENCY,
-      async ([dedupeKey, raw]): Promise<PreparedLead> => {
-        const existing = existingByKey.get(dedupeKey);
-        const analysis = await analyze(mergeWithExisting(raw, existing));
-        await heartbeat();
+      async ({ dedupeKey, raw, existing, listing, website }): Promise<PreparedLead> => {
+        const checkNow = Boolean(website) && toCheck.has(dedupeKey);
+        let analysis: PresenceAnalysis;
+        let keepSignals = false;
+        if (!website || checkNow) {
+          analysis = await analyze(listing);
+          await heartbeat();
+        } else if (hasCurrentCheck(existing, listing.website)) {
+          // Over the limit but checked before: that assessment stands, rather
+          // than being replaced with "not checked".
+          analysis = { signals: existing.signals.map(fromStoredSignal), websiteStatus: existing.websiteStatus };
+          keepSignals = true;
+        } else {
+          analysis = deferWebsiteCheck(
+            listing,
+            `Over this scan's limit of ${limit} website checks. The next scan checks it first.`
+          );
+        }
+
         const merged = mergeWithExisting(raw, existing, analysis.contacts);
-        const score = computeScore(analysis.signals, merged);
         return {
           dedupeKey,
           analysis,
-          data: { ...merged, score, websiteStatus: analysis.websiteStatus, lastSeenAt: now() },
+          keepSignals,
+          data: {
+            ...merged,
+            score: computeScore(analysis.signals, merged),
+            websiteStatus: analysis.websiteStatus,
+            lastSeenAt: now(),
+            // Describes the current website: set when it is fetched, cleared
+            // when there is none, untouched when its check is deferred.
+            ...(checkNow ? { siteCheckedAt: now() } : website ? {} : { siteCheckedAt: null }),
+          },
         };
       }
     );
@@ -259,12 +340,11 @@ export async function executeCampaignScan(
           create: { ...lead.data, campaignId, dedupeKey: lead.dedupeKey },
           update: lead.data,
         });
-        if (existing) {
-          updated++;
-          await tx.gapSignal.deleteMany({ where: { businessId: business.id } });
-        } else {
-          created++;
-        }
+        if (existing) updated++;
+        else created++;
+        if (lead.keepSignals) continue;
+
+        if (existing) await tx.gapSignal.deleteMany({ where: { businessId: business.id } });
         if (lead.analysis.signals.length) {
           await tx.gapSignal.createMany({
             data: lead.analysis.signals.map((s) => ({
@@ -280,12 +360,12 @@ export async function executeCampaignScan(
       }
       await tx.scanRun.update({
         where: { id: scan.id },
-        data: { status: "SUCCEEDED", found: prepared.length, created, updated, skipped, finishedAt: now() },
+        data: { status: "SUCCEEDED", found: prepared.length, created, updated, skipped, deferred, finishedAt: now() },
       });
       await tx.campaign.update({ where: { id: campaignId }, data: { status: "DONE", errorMessage: null } });
     }, TRANSACTION_OPTIONS);
 
-    return { scanId: scan.id, found: prepared.length, created, updated, skipped };
+    return { scanId: scan.id, found: prepared.length, created, updated, skipped, deferred };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     // The transaction (if it started) has rolled back, so earlier leads are

@@ -52,6 +52,7 @@ interface Business {
   score: number;
   crmStage: string;
   websiteStatus: WebsiteStatus;
+  siteCheckedAt: string | null;
   lastSeenAt: string;
   notes: string | null;
   signals: GapSignal[];
@@ -301,6 +302,11 @@ export default function LeadDetailPage() {
               </span>
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
                 Last seen in a scan {formatTimestamp(business.lastSeenAt)}
+                {/* The site status is only as current as the check behind it. */}
+                {business.website &&
+                  (business.siteCheckedAt
+                    ? ` · website checked ${formatTimestamp(business.siteCheckedAt)}`
+                    : " · website not checked yet")}
               </span>
             </div>
           </div>

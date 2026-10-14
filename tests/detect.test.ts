@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { analyzePresence, detectGaps, detectStaleness } from "@/lib/detect";
+import { analyzePresence, deferWebsiteCheck, detectGaps, detectStaleness } from "@/lib/detect";
 import { SafeFetchError, type FetchedPage } from "@/lib/safeFetch";
 
 const GOOD_HTML =
@@ -236,6 +236,21 @@ describe("analyzePresence: contact links on the business's own page", () => {
 
   it("has no contacts when no page was read", async () => {
     expect((await analyzePresence({ website: null }, deps(vi.fn()))).contacts).toBeUndefined();
+  });
+});
+
+describe("deferWebsiteCheck", () => {
+  it("records the website as unchecked: inconclusive, and worth nothing to the score", () => {
+    const result = deferWebsiteCheck({ website: "example.com" }, "over the limit");
+    expect(result.websiteStatus).toBe("NEEDS_CHECK");
+    expect(result.signals).toEqual([
+      expect.objectContaining({ key: "site_check_deferred", severity: 0, certainty: "UNCERTAIN", detail: "over the limit" }),
+    ]);
+  });
+
+  it("still applies the signals that come from the listing alone", () => {
+    const result = deferWebsiteCheck({ website: "example.com", reviewCount: 0, rating: 0 }, "x");
+    expect(keys(result.signals)).toEqual(["site_check_deferred", "thin_listing"]);
   });
 });
 
