@@ -1,17 +1,7 @@
+import { createGeocoder, fetchOverpass } from "./osmClient";
 import type { BusinessSource, RawBusiness, SearchBox } from "./types";
 
-const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
-
-// Both services ask clients to identify themselves. Nominatim's usage policy
-// requires it, and overpass-api.de refuses a request without one with HTTP 406
-// before running the query, which failed every scan.
-const USER_AGENT = "presence-gap-engine/0.1 (lead-research tool)";
-
-// Overpass is told to give up after 25s server-side (see buildOverpassQuery);
-// the client waits a little longer so it sees that answer instead of a hang.
-const NOMINATIM_TIMEOUT_MS = 15_000;
-const OVERPASS_TIMEOUT_MS = 40_000;
+const geocode = createGeocoder();
 
 // Best-effort niche -> OSM tag mapping. Falls back to a free-text name/shop search
 // when the niche isn't in the table, since OSM's tagging vocabulary is huge and
@@ -44,32 +34,6 @@ const NICHE_TAGS: Record<string, string[]> = {
   "real estate": ["office=estate_agent"],
 };
 
-async function geocodeRegion(region: string): Promise<{ lat: number; lon: number; boundingbox: [string, string, string, string] } | null> {
-  const url = new URL(NOMINATIM_URL);
-  url.searchParams.set("q", region);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("limit", "1");
-
-  const res = await fetch(url.toString(), {
-    headers: { "User-Agent": USER_AGENT },
-    signal: AbortSignal.timeout(NOMINATIM_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`Nominatim error: ${res.status} ${res.statusText}`);
-  const results = (await res.json()) as Array<{
-    lat: string;
-    lon: string;
-    boundingbox: [string, string, string, string];
-  }>;
-  if (!Array.isArray(results) || !results.length) return null;
-  const r = results[0];
-  const lat = parseFloat(r.lat);
-  const lon = parseFloat(r.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Array.isArray(r.boundingbox) || r.boundingbox.length !== 4) {
-    throw new Error("Nominatim returned an unexpected response");
-  }
-  return { lat, lon, boundingbox: r.boundingbox };
-}
-
 function buildOverpassQuery(bbox: [string, string, string, string], tags: string[]) {
   // boundingbox from Nominatim is [south, north, west, east]
   const [south, north, west, east] = bbox;
@@ -92,7 +56,7 @@ function tagsForNiche(niche: string): string[] {
   return [];
 }
 
-interface OverpassElement {
+export interface OverpassElement {
   type: string;
   id: number;
   lat?: number;
@@ -136,35 +100,17 @@ export const osmSource: BusinessSource = {
       );
     }
 
-    const geo = await geocodeRegion(region);
+    const geo = await geocode(region);
     if (!geo) {
       throw new Error(`Could not geocode region "${region}". Try a more specific place name.`);
     }
 
     const query = buildOverpassQuery(geo.boundingbox, tags);
-    const res = await fetch(OVERPASS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain", "User-Agent": USER_AGENT },
-      body: query,
-      signal: AbortSignal.timeout(OVERPASS_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      throw new Error(`Overpass API error: ${res.status} ${res.statusText}`);
-    }
-    const data = (await res.json()) as { elements?: OverpassElement[]; remark?: string };
-    if (!Array.isArray(data?.elements)) {
-      throw new Error("Overpass API returned an unexpected response");
-    }
-    // On overload or timeout Overpass still answers 200, with a remark and
-    // whatever it managed to collect. A silently truncated list would look
-    // like a real (small) result, so treat it as a failure.
-    if (data.remark && /runtime error|timed out|out of memory/i.test(data.remark)) {
-      throw new Error(`Overpass API could not finish the query: ${data.remark}`);
-    }
+    const elements = await fetchOverpass(query);
 
     const businesses: RawBusiness[] = [];
     const seen = new Set<string>();
-    for (const el of data.elements) {
+    for (const el of elements) {
       const biz = elementToBusiness(el);
       if (!biz) continue;
       const dedupeKey = biz.name.toLowerCase() + (biz.address ?? "");
