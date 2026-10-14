@@ -21,9 +21,11 @@ export function escapeCsvField(value: CsvValue): string {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? "" : value.toISOString();
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
 
-  // An apostrophe is how a spreadsheet marks a cell as literal text. It is a
-  // formatting marker rather than displayed content, so "+355 69" still reads
-  // as "+355 69" while "=cmd|..." can no longer execute.
+  // A leading apostrophe makes the cell text, so "=cmd|..." can no longer
+  // execute. Excel hides it only when typed into a cell; opening a CSV shows it,
+  // so "+355 69" reads "'+355 69". For phone numbers that is still the better
+  // outcome: unguarded, "+355691234567" opens as the number 3.56E+11 and loses
+  // its plus. (Checked by opening a CSV in Excel 16.0.18730.)
   let text: string = FORMULA_PREFIXES.some((p) => value.startsWith(p)) ? `'${value}` : value;
 
   if (/[",\r\n]/.test(text)) text = `"${text.replace(/"/g, '""')}"`;

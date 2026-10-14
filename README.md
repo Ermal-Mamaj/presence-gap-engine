@@ -118,8 +118,10 @@ Everything a scan concluded is visible, including how sure it was:
   unverified gaps are separate columns, so the certainty split survives into a
   spreadsheet. Fields are RFC 4180 quoted and a leading `=`, `+`, `-` or `@` is
   neutralized, because the rows are third-party data and the destination is
-  Excel (`src/lib/csv.ts`). The export always covers the whole campaign, not the
-  filtered view.
+  Excel (`src/lib/csv.ts`). The guard is a leading apostrophe, and Excel shows
+  it when opening a CSV, so a phone number reads `'+355 69 123 4567`. Without
+  the guard, a compact number like `+355691234567` opens as `3.56E+11`. The
+  export always covers the whole campaign, not the filtered view.
 
 ## Setup
 
