@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { formatDay, localDay } from "@/lib/display";
 import { followUpDay } from "@/lib/leads";
+import type { PipelineSummary } from "@/lib/pipeline";
 
 interface CampaignSummary {
   id: string;
@@ -37,6 +38,7 @@ export default function Home() {
   const [campaigns, setCampaigns] = useState<CampaignSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [due, setDue] = useState<DueFollowUp[]>([]);
+  const [pipeline, setPipeline] = useState<PipelineSummary | null>(null);
 
   // Promise callbacks rather than async/await: state must not be set on the
   // effect's synchronous path (react-hooks/set-state-in-effect).
@@ -67,6 +69,10 @@ export default function Home() {
       .then((res) => (res.ok ? res.json() : []))
       .then((data: DueFollowUp[]) => setDue(data))
       .catch(() => setDue([]));
+    fetch("/api/pipeline")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: PipelineSummary | null) => setPipeline(data))
+      .catch(() => setPipeline(null));
   }, []);
 
   return (
@@ -90,6 +96,7 @@ export default function Home() {
         </div>
 
         {due.length > 0 && <FollowUpsDue items={due} />}
+        {pipeline && pipeline.total > 0 && <Pipeline summary={pipeline} />}
 
         {loadError ? (
           <div>
@@ -168,6 +175,32 @@ function FollowUpsDue({ items }: { items: DueFollowUp[] }) {
           );
         })}
       </ul>
+    </section>
+  );
+}
+
+const percent = (rate: number | null) => (rate === null ? "—" : `${Math.round(rate * 100)}%`);
+
+/** How far leads have got across every campaign: a funnel by furthest stage reached. */
+function Pipeline({ summary }: { summary: PipelineSummary }) {
+  // Past CONTACTED is where the work shows; earlier stages are mostly volume.
+  const shown = summary.reached.filter((r) => r.stage !== "QUALIFIED");
+  return (
+    <section className="mb-8 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Pipeline</h2>
+      <ol className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
+        {shown.map((r) => (
+          <li key={r.stage} className="rounded-md bg-zinc-50 px-3 py-2 dark:bg-zinc-900">
+            <p className="font-mono text-lg font-semibold text-zinc-900 dark:text-zinc-50">{r.count}</p>
+            <p className="text-xs text-zinc-500">{r.stage === "NEW" ? "Leads" : `Reached ${r.stage.toLowerCase()}`}</p>
+          </li>
+        ))}
+      </ol>
+      <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+        {percent(summary.replyRate)} of contacted leads replied · {percent(summary.conversionRate)} of replies converted
+        {summary.dead > 0 && ` · ${summary.dead} marked dead`}. Counted by the furthest stage each lead reached, so a lead
+        that replied and later died still counts as a reply.
+      </p>
     </section>
   );
 }
