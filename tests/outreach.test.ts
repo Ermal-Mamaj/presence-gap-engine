@@ -89,6 +89,38 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("Rating: 4.5");
     expect(prompt).toContain("Reviews: 20");
   });
+
+  it("writes an English email when nothing else is asked for, as it always did", () => {
+    const prompt = buildPrompt({ name: "Clinic" }, [verified]);
+    expect(prompt).toContain("outreach email");
+    expect(prompt).toContain("Write everything in English.");
+  });
+
+  it("writes in the campaign's language, keeping the observations as the only facts", () => {
+    const prompt = buildPrompt({ name: "Klinika" }, [verified], { language: "sq" });
+    expect(prompt).toContain("Write everything in Albanian.");
+    expect(prompt).toContain("without adding to them");
+    // The observation itself is passed through unchanged for the model to render.
+    expect(prompt).toContain("Site has no mobile viewport tag");
+  });
+
+  it.each([
+    ["phone", "phone call", "read aloud"],
+    ["message", "WhatsApp or Facebook message", "notification"],
+  ] as const)("gives a %s draft its own rules", (channel, kind, rule) => {
+    const prompt = buildPrompt({ name: "Clinic" }, [verified], { channel });
+    expect(prompt).toContain(kind);
+    expect(prompt).toContain(rule);
+    expect(prompt).not.toContain("outreach email");
+  });
+
+  it("keeps the shared rules on every channel", () => {
+    for (const channel of ["email", "phone", "message"] as const) {
+      const prompt = buildPrompt({ name: "Clinic" }, [verified], { channel });
+      expect(prompt).toContain("Do not invent facts");
+      expect(prompt).toContain("ONE most striking gap");
+    }
+  });
 });
 
 describe("draftOutreach", () => {
@@ -97,6 +129,14 @@ describe("draftOutreach", () => {
     const draft = await draftOutreach({ name: "Clinic" }, [verified], { createMessage });
     expect(draft.subject).toBe("A faster site for your clinic");
     expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the language and channel through to the prompt", async () => {
+    const createMessage = vi.fn().mockResolvedValue(reply(validJson));
+    await draftOutreach({ name: "Klinika" }, [verified], { createMessage }, { language: "sq", channel: "message" });
+    const prompt = createMessage.mock.calls[0][0] as string;
+    expect(prompt).toContain("Albanian");
+    expect(prompt).toContain("WhatsApp or Facebook message");
   });
 
   it("never gives the model an uncertain observation to state as fact", async () => {

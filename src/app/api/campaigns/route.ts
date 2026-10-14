@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { DEFAULT_LANGUAGE, DRAFT_LANGUAGES, type DraftLanguage } from "@/lib/outreachOptions";
 import { prisma } from "@/lib/prisma";
 
 const createCampaignSchema = z.object({
@@ -7,6 +8,7 @@ const createCampaignSchema = z.object({
   region: z.string().trim().min(1).max(200),
   niche: z.string().trim().min(1).max(100),
   source: z.enum(["OSM", "GOOGLE_MAPS_SCRAPER"]),
+  language: z.enum(Object.keys(DRAFT_LANGUAGES) as [DraftLanguage, ...DraftLanguage[]]).default(DEFAULT_LANGUAGE),
 });
 
 export async function GET() {
@@ -27,8 +29,11 @@ export async function POST(req: NextRequest) {
 
   const parsed = createCampaignSchema.safeParse(body);
   if (!parsed.success) {
-    const missing = parsed.error.issues.some((i) => i.path[0] === "source")
+    const about = (field: string) => parsed.error.issues.some((i) => i.path[0] === field);
+    const missing = about("source")
       ? "source must be OSM or GOOGLE_MAPS_SCRAPER"
+      : about("language")
+      ? `language must be one of ${Object.keys(DRAFT_LANGUAGES).join(", ")}`
       : "name, region, and niche are required (name up to 120, region up to 200, niche up to 100 characters)";
     return NextResponse.json({ error: missing }, { status: 400 });
   }

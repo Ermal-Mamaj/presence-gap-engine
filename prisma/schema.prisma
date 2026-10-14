@@ -60,6 +60,7 @@ model Campaign {
   region      String
   niche       String
   source      SourceType     @default(OSM)
+  language    String         @default("en") // drafts are written in this; see src/lib/outreachOptions.ts
   status      CampaignStatus @default(DRAFT)
   errorMessage String?
   createdAt   DateTime       @default(now())

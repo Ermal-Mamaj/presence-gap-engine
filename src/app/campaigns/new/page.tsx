@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { DRAFT_LANGUAGES, type DraftLanguage, SUGGESTED_LANGUAGE } from "@/lib/outreachOptions";
 
 export default function NewCampaignPage() {
   const router = useRouter();
@@ -9,6 +10,7 @@ export default function NewCampaignPage() {
   const [region, setRegion] = useState("");
   const [niche, setNiche] = useState("");
   const [source, setSource] = useState<"OSM" | "GOOGLE_MAPS_SCRAPER">("OSM");
+  const [language, setLanguage] = useState<DraftLanguage>(SUGGESTED_LANGUAGE);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,7 +22,7 @@ export default function NewCampaignPage() {
       const res = await fetch("/api/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, region, niche, source }),
+        body: JSON.stringify({ name, region, niche, source, language }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -75,6 +77,24 @@ export default function NewCampaignPage() {
             <p className="mt-1 text-xs text-zinc-500">
               OSM source works best with common terms: dentist, restaurant, hairdresser, lawyer, gym, cafe, etc.
             </p>
+          </div>
+          <div>
+            <label htmlFor="language" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Language for outreach drafts
+            </label>
+            <select
+              id="language"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value as DraftLanguage)}
+              className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              {Object.entries(DRAFT_LANGUAGES).map(([code, label]) => (
+                <option key={code} value={code}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-zinc-500">Write to businesses in the language they work in.</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">Data source</label>

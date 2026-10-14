@@ -5,6 +5,15 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizeEmail, normalizePhone } from "@/lib/contacts";
 import { canTransition, CRM_STAGES, isCrmStage } from "@/lib/crm";
+import {
+  CHANNEL_LABEL,
+  defaultChannel,
+  DRAFT_CHANNELS,
+  DRAFT_LANGUAGES,
+  type DraftChannel,
+  isDraftChannel,
+  isDraftLanguage,
+} from "@/lib/outreachOptions";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
   formatTimestamp,
@@ -25,6 +34,7 @@ interface GapSignal {
 
 interface Outreach {
   id: string;
+  channel: string;
   subject: string | null;
   openLine: string;
   body: string;
@@ -58,7 +68,12 @@ interface Business {
   signals: GapSignal[];
   outreach: Outreach[];
   stageChanges: StageChange[];
-  campaign: { id: string; name: string; region: string };
+  campaign: { id: string; name: string; region: string; language: string };
+}
+
+/** Drafts made before channels existed are stored as "email", which is what they were. */
+function channelLabel(channel: string): string {
+  return isDraftChannel(channel) ? CHANNEL_LABEL[channel] : channel;
 }
 
 const CONTACT_LINK_CLASS = "text-sky-600 hover:underline dark:text-sky-400";
@@ -130,6 +145,8 @@ export default function LeadDetailPage() {
   const [notes, setNotes] = useState("");
   const [notesState, setNotesState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [copied, setCopied] = useState(false);
+  /** The channel picked for the next draft; until one is, a channel the lead can be reached on. */
+  const [pickedChannel, setPickedChannel] = useState<DraftChannel | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Whether the notes box holds edits the server hasn't accepted. A ref, not
@@ -166,9 +183,12 @@ export default function LeadDetailPage() {
     if (copyTimer.current) clearTimeout(copyTimer.current);
   }, []);
 
-  /** Copies the draft as pasteable text: subject line, blank line, body. */
+  /**
+   * Copies the draft as pasteable text. An email gets its subject line on top;
+   * a call script or a message is copied as it will be said or sent.
+   */
   async function copyDraft(draft: Outreach) {
-    const text = draft.subject ? `Subject: ${draft.subject}\n\n${draft.body}` : draft.body;
+    const text = draft.channel === "email" && draft.subject ? `Subject: ${draft.subject}\n\n${draft.body}` : draft.body;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -181,11 +201,15 @@ export default function LeadDetailPage() {
     }
   }
 
-  async function handleDraft() {
+  async function handleDraft(channel: DraftChannel) {
     setDrafting(true);
     setDraftError(null);
     try {
-      const res = await fetch(`/api/leads/${id}/draft`, { method: "POST" });
+      const res = await fetch(`/api/leads/${id}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel }),
+      });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? "Failed to draft outreach");
       load();
@@ -266,6 +290,10 @@ export default function LeadDetailPage() {
 
   const currentStage = isCrmStage(business.crmStage) ? business.crmStage : null;
   const latestDraft = business.outreach[0] ?? null;
+  const channel = pickedChannel ?? defaultChannel(business);
+  const draftLanguage = isDraftLanguage(business.campaign.language)
+    ? DRAFT_LANGUAGES[business.campaign.language]
+    : business.campaign.language;
   const olderDrafts = business.outreach.slice(1);
 
   return (
@@ -365,7 +393,9 @@ export default function LeadDetailPage() {
 
         <section className="mt-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Outreach draft</h2>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Outreach draft <span className="font-normal text-zinc-500">· in {draftLanguage}</span>
+            </h2>
             <div className="flex items-center gap-2">
               {latestDraft && (
                 <button
@@ -375,8 +405,23 @@ export default function LeadDetailPage() {
                   {copied ? "Copied" : "Copy"}
                 </button>
               )}
+              <label htmlFor="draft-channel" className="sr-only">
+                Draft for
+              </label>
+              <select
+                id="draft-channel"
+                value={channel}
+                onChange={(e) => setPickedChannel(e.target.value as DraftChannel)}
+                className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              >
+                {DRAFT_CHANNELS.map((c) => (
+                  <option key={c} value={c}>
+                    {CHANNEL_LABEL[c]}
+                  </option>
+                ))}
+              </select>
               <button
-                onClick={handleDraft}
+                onClick={() => handleDraft(channel)}
                 disabled={drafting}
                 className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
               >
@@ -389,9 +434,10 @@ export default function LeadDetailPage() {
             <p className="mt-2 text-sm text-zinc-500">No draft yet.</p>
           ) : (
             <div className="mt-3 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-              <p className="text-xs text-zinc-500">Subject</p>
+              <p className="text-xs font-medium text-zinc-500">{channelLabel(latestDraft.channel)}</p>
+              <p className="mt-2 text-xs text-zinc-500">{latestDraft.channel === "email" ? "Subject" : "Title"}</p>
               <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">{latestDraft.subject}</p>
-              <p className="mt-3 text-xs text-zinc-500">Body</p>
+              <p className="mt-3 text-xs text-zinc-500">{latestDraft.channel === "phone" ? "Script" : "Body"}</p>
               <p className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{latestDraft.body}</p>
               <p className="mt-3 text-xs text-zinc-400">Drafted {formatTimestamp(latestDraft.createdAt)}</p>
             </div>
@@ -407,7 +453,9 @@ export default function LeadDetailPage() {
                     key={o.id}
                     className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
                   >
-                    <p className="text-xs text-zinc-400">{formatTimestamp(o.createdAt)}</p>
+                    <p className="text-xs text-zinc-400">
+                      {channelLabel(o.channel)} · {formatTimestamp(o.createdAt)}
+                    </p>
                     <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">{o.subject}</p>
                     <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-400">{o.body}</p>
                   </div>
