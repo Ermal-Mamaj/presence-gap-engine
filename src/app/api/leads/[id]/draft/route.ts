@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fromStoredSignal } from "@/lib/detect";
 import { prisma } from "@/lib/prisma";
 import { draftOutreach, OutreachError } from "@/lib/outreach";
 
@@ -26,13 +27,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         rating: business.rating,
         reviewCount: business.reviewCount,
       },
-      business.signals.map((s) => ({
-        key: s.key,
-        label: s.label,
-        severity: s.severity,
-        certainty: s.certainty === "UNCERTAIN" ? "UNCERTAIN" : "VERIFIED",
-        detail: s.detail ?? undefined,
-      }))
+      business.signals.map(fromStoredSignal)
     );
   } catch (err) {
     if (err instanceof OutreachError) {

@@ -102,6 +102,8 @@ export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [running, setRunning] = useState(false);
+  const [rescoring, setRescoring] = useState(false);
+  const [rescoreNotice, setRescoreNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [stageFilter, setStageFilter] = useState<string>("ALL");
@@ -196,6 +198,26 @@ export default function CampaignDetailPage() {
       await load();
     } finally {
       setRunning(false);
+    }
+  }
+
+  /** Recomputes scores from stored signals; no website is fetched. */
+  async function handleRescore() {
+    setRescoring(true);
+    setError(null);
+    setRescoreNotice(null);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/rescore`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? "Could not recalculate scores");
+      setRescoreNotice(
+        data.changed === 0 ? "Scores are up to date." : `${data.changed} of ${data.rescored} scores changed.`
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setRescoring(false);
     }
   }
 
@@ -373,12 +395,24 @@ export default function CampaignDetailPage() {
                   : `${campaign.businesses.length} leads`}
               </span>
 
+              {rescoreNotice && <span className="text-xs text-zinc-500 dark:text-zinc-400">{rescoreNotice}</span>}
+
+              {/* A scan rewrites every score anyway, so this only matters between scans. */}
+              <button
+                onClick={handleRescore}
+                disabled={rescoring || scanning}
+                title="Recomputes every score from the gaps already found. No website is checked again."
+                className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              >
+                {rescoring ? "Recalculating…" : "Recalculate scores"}
+              </button>
+
               {/* Exports the whole campaign, not the filtered view — said plainly
                   here so the two can't quietly disagree. */}
               <a
                 href={`/api/campaigns/${id}/export`}
                 title="Downloads every lead in this campaign, ignoring the filters above."
-                className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
               >
                 Export all as CSV
               </a>
