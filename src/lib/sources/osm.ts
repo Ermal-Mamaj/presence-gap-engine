@@ -33,6 +33,43 @@ const NICHE_TAGS: Record<string, string[]> = {
   plumber: ["craft=plumber"],
   electrician: ["craft=electrician"],
   florist: ["shop=florist"],
+  optician: ["shop=optician"],
+  "beauty salon": ["shop=beauty"],
+  "nail salon": ["shop=beauty"],
+  tattoo: ["shop=tattoo"],
+  "car wash": ["amenity=car_wash"],
+  "car dealer": ["shop=car"],
+  "car rental": ["amenity=car_rental"],
+  "driving school": ["amenity=driving_school"],
+  kindergarten: ["amenity=kindergarten"],
+  "language school": ["amenity=language_school"],
+  "travel agency": ["shop=travel_agency"],
+  insurance: ["office=insurance"],
+  notary: ["office=notary"],
+  architect: ["office=architect"],
+  photographer: ["craft=photographer", "shop=photo"],
+  tailor: ["craft=tailor", "shop=tailor"],
+  carpenter: ["craft=carpenter"],
+  painter: ["craft=painter"],
+  locksmith: ["craft=locksmith", "shop=locksmith"],
+  physiotherapist: ["healthcare=physiotherapist"],
+  "fast food": ["amenity=fast_food"],
+  pub: ["amenity=pub"],
+  nightclub: ["amenity=nightclub"],
+  "guest house": ["tourism=guest_house"],
+  hostel: ["tourism=hostel"],
+  butcher: ["shop=butcher"],
+  supermarket: ["shop=supermarket"],
+  jewelry: ["shop=jewelry"],
+  furniture: ["shop=furniture"],
+  hardware: ["shop=hardware"],
+  electronics: ["shop=electronics"],
+  "phone shop": ["shop=mobile_phone"],
+  clothes: ["shop=clothes"],
+  bookshop: ["shop=books"],
+  "pet shop": ["shop=pet"],
+  bicycle: ["shop=bicycle"],
+  laundry: ["shop=laundry", "shop=dry_cleaning"],
   vet: ["amenity=veterinary"],
   veterinarian: ["amenity=veterinary"],
   realestate: ["office=estate_agent"],
@@ -81,12 +118,25 @@ function buildOverpassQuery(bbox: [string, string, string, string], tags: string
   return `[out:json][timeout:25];(${clauses});out center tags 200;`;
 }
 
-function tagsForNiche(niche: string): string[] {
+// One OSM tag, as OSM writes it: "shop=optician", "healthcare=physiotherapist".
+const RAW_TAG = /^[a-z][a-z0-9_:]*=[a-z0-9_:-]+$/i;
+const MAX_RAW_TAGS = 5;
+
+/**
+ * The OSM tags for a niche: a known term ("dentist", "dentists"), or OSM tags
+ * given directly ("shop=optician", or several separated by commas) for any
+ * business type the table doesn't know. Empty when neither applies.
+ */
+export function tagsForNiche(niche: string): string[] {
   const key = niche.trim().toLowerCase();
-  if (NICHE_TAGS[key]) return NICHE_TAGS[key];
+  // Own keys only: "constructor" is not a niche.
+  const known = (k: string) => (Object.hasOwn(NICHE_TAGS, k) ? NICHE_TAGS[k] : undefined);
   // loose match, e.g. "dentists" -> "dentist"
-  const singular = key.endsWith("s") ? key.slice(0, -1) : key;
-  if (NICHE_TAGS[singular]) return NICHE_TAGS[singular];
+  const fromTable = known(key) ?? (key.endsWith("s") ? known(key.slice(0, -1)) : undefined);
+  if (fromTable) return fromTable;
+
+  const raw = niche.split(",").map((t) => t.trim()).filter(Boolean);
+  if (raw.length > 0 && raw.length <= MAX_RAW_TAGS && raw.every((t) => RAW_TAG.test(t))) return raw;
   return [];
 }
 
@@ -140,7 +190,8 @@ export const osmSource: BusinessSource = {
     const tags = tagsForNiche(niche);
     if (!tags.length) {
       throw new Error(
-        `No OSM tag mapping known for niche "${niche}". Try a common term like "dentist", "restaurant", "hairdresser", "lawyer", "gym", etc.`
+        `No OSM tag mapping known for niche "${niche}". Use a known term such as "dentist", "restaurant", "optician" or "car wash", ` +
+          `or give the OpenStreetMap tag directly, e.g. "shop=optician" (several can be separated by commas).`
       );
     }
 
