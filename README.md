@@ -1,5 +1,7 @@
 # Presence Gap Engine
 
+[![CI](https://github.com/Ermal-Mamaj/presence-gap-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Ermal-Mamaj/presence-gap-engine/actions/workflows/ci.yml)
+
 Find businesses with a visibly weak or missing web presence, prove you noticed
 something specific and real about them, offer to fix it, deliver the work,
 then keep them around.
@@ -68,6 +70,36 @@ A failed request is **not** proof of a gap. Network errors, timeouts, TLS failur
 
 Stages move forward freely (skipping is allowed), one step back is allowed to fix a mistake, any lead can be marked `DEAD`, and a dead lead can only be reopened to `NEW` or `QUALIFIED` (`src/lib/crm.ts`). Every stage change is stored in `StageChange`.
 
+The stage buttons on a lead apply those same rules, so a move the API would reject is shown as unavailable rather than failing on click. A lead's full `StageChange` log is listed under **Stage history**.
+
+## What the UI shows
+
+Everything a scan concluded is visible, including how sure it was:
+
+- **Scan history** per campaign — the last five runs with status, duration, how
+  many records were found, created, refreshed and skipped, and the error for a
+  failed run. A failed scan still lists the leads from the last good one.
+- **Site status** per lead (`None listed`, `Needs work`, `Inconclusive`,
+  `Looks fine`). `Inconclusive` means a check failed, not that the site is bad,
+  and `None listed` means the listing has no website — the business may still
+  have one.
+- **Certainty on every gap**, in the campaign table as well as the lead page.
+  An `UNCERTAIN` signal is always marked `(unverified)`, so a failed request is
+  never presented as a proven gap.
+- **Leads that stopped appearing.** Scans never delete, so a lead whose
+  `lastSeenAt` predates the latest successful scan is marked *Not in last scan*
+  instead of silently vanishing.
+- **Earlier outreach drafts**, collapsed under the current one, with a copy
+  button that yields the subject and body as pasteable text.
+- **Filter and sort** the lead table by CRM stage, site status, score or name.
+  This is client-side: every lead is already on the page.
+- **CSV export** per campaign (`GET /api/campaigns/<id>/export`). Verified and
+  unverified gaps are separate columns, so the certainty split survives into a
+  spreadsheet. Fields are RFC 4180 quoted and a leading `=`, `+`, `-` or `@` is
+  neutralized, because the rows are third-party data and the destination is
+  Excel (`src/lib/csv.ts`). The export always covers the whole campaign, not the
+  filtered view.
+
 ## Setup
 
 ```bash
@@ -78,13 +110,15 @@ npx prisma migrate deploy
 npm run dev
 ```
 
-Checks: `npm run typecheck`, `npm run lint`, `npm test` (Vitest; builds a throwaway SQLite database from the real migrations, so it never touches `prisma/dev.db`), and `npm run build`. `npm install` runs `prisma generate` for you.
+Checks: `npm run typecheck`, `npm run lint`, `npm test` (Vitest; builds a throwaway SQLite database from the real migrations, so it never touches your `dev.db`), and `npm run build`. `npm install` runs `prisma generate` for you.
+
+The same four checks run in CI on every push and pull request (`.github/workflows/ci.yml`, Node 22).
 
 Open [http://localhost:3000](http://localhost:3000). Create a campaign with a
 narrow region + niche, run the pipeline, then open a lead to see its score,
 gap signals, generate an outreach draft, and move it through the CRM stages.
 
-The dev database is SQLite (`prisma/dev.db`, gitignored). To move to Postgres
+The dev database is SQLite (`dev.db` in the project root, gitignored). To move to Postgres
 for production, change the `datasource` provider in `prisma/schema.prisma`
 and swap the driver adapter in `src/lib/prisma.ts` for `@prisma/adapter-pg`
 (or your Postgres adapter of choice) — the rest of the app is unaffected.
@@ -109,8 +143,10 @@ src/lib/dedupe.ts    stable lead identity across reruns
 src/lib/crm.ts       allowed CRM stage transitions
 src/lib/leads.ts     stage/notes updates with history
 src/lib/outreach.ts  Claude-drafted outreach messages (output validated with Zod)
+src/lib/display.ts   shared labels/formatting for scan-derived state
+src/lib/csv.ts       CSV serialization (RFC 4180 quoting, spreadsheet formula guard)
 src/app/api/         REST endpoints the UI calls
 src/app/             campaign dashboard, campaign detail, lead detail/CRM
 prisma/schema.prisma data model: Campaign, ScanRun, Business, GapSignal, Outreach, StageChange
-tests/               Vitest suites (scoring, detection, fetcher, scans, CRM, migration)
+tests/               Vitest suites (scoring, detection, fetcher, scans, CRM, migration, display, csv)
 ```
