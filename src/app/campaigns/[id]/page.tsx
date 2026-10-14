@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -21,6 +22,12 @@ import {
 
 const WEBSITE_STATUSES: WebsiteStatus[] = ["NONE_FOUND", "NEEDS_WORK", "NEEDS_CHECK", "GOOD"];
 type SortKey = "score" | "name" | "followUp";
+
+// Leaflet needs the browser, and most visits never open the map.
+const LeadMap = dynamic(() => import("./LeadMap"), {
+  ssr: false,
+  loading: () => <p className="mt-4 text-sm text-zinc-500">Loading map…</p>,
+});
 
 /** How often to re-read a campaign while its scan is running. */
 const SCAN_POLL_MS = 2000;
@@ -45,6 +52,8 @@ interface Business {
   facebook: string | null;
   instagram: string | null;
   website: string | null;
+  latitude: number | null;
+  longitude: number | null;
   rating: number | null;
   reviewCount: number | null;
   score: number;
@@ -112,6 +121,7 @@ export default function CampaignDetailPage() {
   const [rescoring, setRescoring] = useState(false);
   const [editing, setEditing] = useState(false);
   const [bulkDrafting, setBulkDrafting] = useState(false);
+  const [view, setView] = useState<"table" | "map">("table");
   const [rescoreNotice, setRescoreNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -459,6 +469,23 @@ export default function CampaignDetailPage() {
                   : `${campaign.businesses.length} leads`}
               </span>
 
+              <span className="inline-flex overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
+                {(["table", "map"] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    aria-pressed={view === v}
+                    className={`px-2.5 py-1.5 font-medium ${
+                      view === v
+                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                    }`}
+                  >
+                    {v === "table" ? "Table" : "Map"}
+                  </button>
+                ))}
+              </span>
+
               {rescoreNotice && <span className="text-xs text-zinc-500 dark:text-zinc-400">{rescoreNotice}</span>}
 
               <button
@@ -504,6 +531,10 @@ export default function CampaignDetailPage() {
                 >
                   Clear filters
                 </button>
+              </div>
+            ) : view === "map" ? (
+              <div className="mt-4">
+                <LeadMap leads={visible} />
               </div>
             ) : (
           <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
