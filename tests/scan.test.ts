@@ -525,6 +525,39 @@ describe("claiming a scan separately from running it", () => {
     expect(await leads(campaignId)).toHaveLength(1);
   });
 
+  it("keeps a scan that outlasts the stale window from being taken over", async () => {
+    // Each website check takes most of the window, so the whole scan runs
+    // well past it. Only a claim that is refreshed as work progresses stops a
+    // second request from reading the live scan as crashed.
+    const staleAfterMs = 1000;
+    let clock = Date.now();
+    const now = () => new Date(clock);
+    const claim = await claimCampaignScan(prisma, campaignId, { now, staleAfterMs });
+
+    let rival: unknown;
+    let checked = 0;
+    const slowAnalyze = async (business: DetectableBusiness) => {
+      clock += 600;
+      // The last of three checks: long past the window measured from the claim.
+      if (++checked === 3) {
+        rival = await claimCampaignScan(prisma, campaignId, { now, staleAfterMs }).catch((err: unknown) => err);
+      }
+      return fakeAnalyze(business);
+    };
+
+    await executeCampaignScan(prisma, claim, {
+      getSource: returning([biz(1), biz(2), biz(3)]),
+      analyze: slowAnalyze,
+      concurrency: 1,
+      staleAfterMs,
+      now,
+    });
+
+    expect(rival).toBeInstanceOf(ScanConflictError);
+    const run = await prisma.scanRun.findUniqueOrThrow({ where: { id: claim.scanId } });
+    expect(run.status).toBe("SUCCEEDED");
+  });
+
   it("frees the campaign for a normal rerun after a deferred scan failed", async () => {
     const claim = await claimCampaignScan(prisma, campaignId);
     await expect(
