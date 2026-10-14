@@ -123,6 +123,8 @@ A failed request is **not** proof of a gap. Network errors, timeouts, TLS failur
 
 Stages move forward freely (skipping is allowed), one step back is allowed to fix a mistake, any lead can be marked `DEAD`, and a dead lead can only be reopened to `NEW` or `QUALIFIED` (`src/lib/crm.ts`). Every stage change is stored in `StageChange`.
 
+**Follow-ups and sends.** Each lead can have a follow-up day. The home page lists every lead due today or earlier across campaigns (dead leads excluded), and the campaign table shows each date and can sort by it. **Mark as sent** on a draft records when it went out; a lead still NEW or QUALIFIED moves to CONTACTED, with its stage-history row, and gets a follow-up three days later unless one is already planned. A follow-up is stored as a calendar day (UTC midnight), so no timezone can move it, and "due" is decided by the browser's own today.
+
 The stage buttons on a lead apply those same rules, so a move the API would reject is shown as unavailable rather than failing on click. A lead's full `StageChange` log is listed under **Stage history**.
 
 ## What the UI shows

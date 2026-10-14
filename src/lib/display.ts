@@ -52,6 +52,21 @@ export function formatTimestamp(iso: string | null | undefined): string {
   });
 }
 
+/**
+ * Today as a calendar day in the viewer's own timezone, "2026-10-17", to
+ * compare with follow-up days (see followUpDay in src/lib/leads.ts).
+ */
+export function localDay(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** A follow-up day for display, e.g. "Oct 17", without letting a timezone move it. */
+export function formatDay(day: string): string {
+  const d = new Date(`${day}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 /** Whole seconds, or "—" when a run never finished. */
 export function formatDuration(startedAt: string, finishedAt: string | null): string {
   if (!finishedAt) return "—";

@@ -16,8 +16,11 @@ import {
 } from "@/lib/outreachOptions";
 import type { DetectedSignal, WebsiteStatus } from "@/lib/detect";
 import { explainScore, gapContributions, UNCERTAIN_WEIGHT } from "@/lib/score";
+import { followUpDay } from "@/lib/leads";
 import {
+  formatDay,
   formatTimestamp,
+  localDay,
   WEBSITE_STATUS_HINT,
   WEBSITE_STATUS_LABEL,
   WEBSITE_STATUS_STYLE,
@@ -39,6 +42,7 @@ interface Outreach {
   subject: string | null;
   openLine: string;
   body: string;
+  sentAt: string | null;
   createdAt: string;
 }
 
@@ -66,6 +70,7 @@ interface Business {
   siteCheckedAt: string | null;
   lastSeenAt: string;
   notes: string | null;
+  followUpAt: string | null;
   signals: GapSignal[];
   outreach: Outreach[];
   stageChanges: StageChange[];
@@ -142,6 +147,35 @@ function ScoreExplanation({ business }: { business: Business }) {
         </p>
       )}
     </section>
+  );
+}
+
+/** The day to get back to this lead, with a way to clear it, and a flag once it is due. */
+function FollowUp({ day, onChange }: { day: string | null; onChange: (day: string | null) => void }) {
+  const due = day !== null && day <= localDay();
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+      <label htmlFor="follow-up" className="text-zinc-600 dark:text-zinc-400">
+        Follow up on
+      </label>
+      <input
+        id="follow-up"
+        type="date"
+        value={day ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+      />
+      {day && (
+        <button onClick={() => onChange(null)} className="text-xs text-zinc-500 underline hover:text-zinc-700">
+          Clear
+        </button>
+      )}
+      {due && (
+        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+          {day === localDay() ? "Due today" : `Overdue since ${formatDay(day)}`}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -291,6 +325,36 @@ export default function LeadDetailPage() {
       setDraftError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setDrafting(false);
+    }
+  }
+
+  /** Saves or clears the follow-up day ("2026-10-17", or null). */
+  async function setFollowUp(day: string | null) {
+    if (notesDirty.current) await saveNotes();
+    const res = await fetch(`/api/leads/${id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ followUpAt: day }),
+    });
+    if (res.ok) {
+      setStageError(null);
+      load();
+    } else {
+      const data = await res.json().catch(() => null);
+      setStageError(data?.error ?? "Could not save the follow-up date");
+    }
+  }
+
+  /** Records that a draft went out; the server moves the lead to CONTACTED and plans a follow-up. */
+  async function markSent(draftId: string) {
+    if (notesDirty.current) await saveNotes();
+    const res = await fetch(`/api/outreach/${draftId}/sent`, { method: "POST" });
+    if (res.ok) {
+      setDraftError(null);
+      load();
+    } else {
+      const data = await res.json().catch(() => null);
+      setDraftError(data?.error ?? "Could not mark the draft as sent");
     }
   }
 
@@ -446,6 +510,7 @@ export default function LeadDetailPage() {
               );
             })}
           </div>
+          <FollowUp day={business.followUpAt ? followUpDay(business.followUpAt) : null} onChange={setFollowUp} />
         </section>
 
         <section className="mt-6">
@@ -515,7 +580,20 @@ export default function LeadDetailPage() {
               <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">{latestDraft.subject}</p>
               <p className="mt-3 text-xs text-zinc-500">{latestDraft.channel === "phone" ? "Script" : "Body"}</p>
               <p className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{latestDraft.body}</p>
-              <p className="mt-3 text-xs text-zinc-400">Drafted {formatTimestamp(latestDraft.createdAt)}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+                <span>Drafted {formatTimestamp(latestDraft.createdAt)}</span>
+                {latestDraft.sentAt ? (
+                  <span className="text-emerald-700 dark:text-emerald-400">Sent {formatTimestamp(latestDraft.sentAt)}</span>
+                ) : (
+                  <button
+                    onClick={() => markSent(latestDraft.id)}
+                    title="Records the send. A lead not yet contacted moves to CONTACTED, with a follow-up in 3 days if none is planned."
+                    className="rounded-md border border-zinc-300 px-2 py-1 font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                  >
+                    Mark as sent
+                  </button>
+                )}
+              </div>
             </div>
           )}
           {olderDrafts.length > 0 && (
@@ -531,6 +609,7 @@ export default function LeadDetailPage() {
                   >
                     <p className="text-xs text-zinc-400">
                       {channelLabel(o.channel)} · {formatTimestamp(o.createdAt)}
+                      {o.sentAt && ` · sent ${formatTimestamp(o.sentAt)}`}
                     </p>
                     <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">{o.subject}</p>
                     <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-400">{o.body}</p>
