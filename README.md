@@ -49,6 +49,17 @@ A campaign's scan (`src/lib/scan.ts`) is built so that running it again can neve
 - **Reruns update in place.** A lead's identity is its source id (or, without one, its normalized name + address), enforced by a unique key per campaign (`src/lib/dedupe.ts`). A rerun refreshes the data and replaces the lead's gap signals; it does not add duplicates. A value the source stops reporting is kept rather than erased.
 - **Each scan is recorded** as a `ScanRun` (status, found/created/updated/skipped counts, error). `Campaign.status` reflects the latest scan; a `FAILED` campaign still shows the leads from its last good scan.
 - **One scan at a time per campaign.** The campaign is claimed with a single atomic update; a second request gets HTTP 409. A scan that crashed is considered abandoned after 15 minutes and can be rerun.
+- **The scan outlives its request.** `POST /api/campaigns/<id>/run` claims the
+  campaign, answers `202 Accepted` with the `ScanRun` id, and runs the scan via
+  Next's `after` once the response is sent; the page then polls the campaign
+  until it leaves `RUNNING`. Checking 60 websites takes minutes, and the scan
+  used to run inside the request, so a long one outlived it: the work finished
+  and `ScanRun` recorded it, but the browser lost the answer. The claim stays
+  synchronous because it decides the status code (404, 409). You can leave the
+  page while a scan runs. Note that `after` runs within the route's max
+  duration, so a serverless host still caps it — `maxDuration` is set to 300s
+  where the platform honours it, and a run killed mid-flight is reclaimed by the
+  staleness rule above.
 - **Bad records are skipped, not fatal.** A record without a name is dropped; an impossible field (a rating of 47) becomes "unknown". If a source returns records but none are usable, the scan fails instead of silently saving nothing. An empty result is a valid result.
 
 ## Website checks and certainty

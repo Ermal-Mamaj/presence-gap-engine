@@ -91,23 +91,29 @@ function mergeWithExisting(raw: RawBusiness, existing: Business | undefined) {
   };
 }
 
+/** A campaign claimed for scanning, and the ScanRun recording the attempt. */
+export interface ScanClaim {
+  scanId: string;
+  campaignId: string;
+  source: string;
+  region: string;
+  niche: string;
+}
+
 /**
- * Runs discovery for a campaign without ever putting saved leads at risk.
+ * Claims a campaign for scanning and opens its ScanRun.
  *
- * 1. Claim the campaign atomically; a second concurrent run is refused.
- * 2. Discover, validate and analyze everything in memory. If any of this
- *    fails, nothing has been written except the failed ScanRun record.
- * 3. Apply the results in one transaction that only creates or updates leads.
- *    Leads are never deleted, and CRM stage, notes and outreach are never
- *    touched, so a rerun can't destroy work already done on a lead.
+ * Split from the scan body so a caller can answer the client before the work
+ * starts: everything that decides the HTTP status — the campaign exists, no
+ * other scan holds it — happens here, so 404 and 409 are still immediate and
+ * correct while the scan itself runs afterwards.
  */
-export async function runCampaignScan(
+export async function claimCampaignScan(
   prisma: PrismaClient,
   campaignId: string,
-  deps: ScanDeps
-): Promise<ScanOutcome> {
+  deps: Pick<ScanDeps, "staleAfterMs" | "now"> = {}
+): Promise<ScanClaim> {
   const now = deps.now ?? (() => new Date());
-  const analyze = deps.analyze ?? ((b: DetectableBusiness) => analyzePresence(b));
 
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
   if (!campaign) throw new CampaignNotFoundError();
@@ -126,6 +132,39 @@ export async function runCampaignScan(
     data: { status: "FAILED", errorMessage: "Interrupted before it finished", finishedAt: now() },
   });
   const scan = await prisma.scanRun.create({ data: { campaignId, startedAt: now() } });
+
+  return {
+    scanId: scan.id,
+    campaignId,
+    source: campaign.source,
+    region: campaign.region,
+    niche: campaign.niche,
+  };
+}
+
+/**
+ * Runs the claimed scan without ever putting saved leads at risk.
+ *
+ * 1. Discover, validate and analyze everything in memory. If any of this
+ *    fails, nothing has been written except the failed ScanRun record.
+ * 2. Apply the results in one transaction that only creates or updates leads.
+ *    Leads are never deleted, and CRM stage, notes and outreach are never
+ *    touched, so a rerun can't destroy work already done on a lead.
+ *
+ * Safe to call after the HTTP response has been sent: every outcome, including
+ * a crash, is recorded on the ScanRun, and a campaign left RUNNING by a killed
+ * process is reclaimable once it goes stale.
+ */
+export async function executeCampaignScan(
+  prisma: PrismaClient,
+  claim: ScanClaim,
+  deps: ScanDeps
+): Promise<ScanOutcome> {
+  const now = deps.now ?? (() => new Date());
+  const analyze = deps.analyze ?? ((b: DetectableBusiness) => analyzePresence(b));
+  const { campaignId, scanId } = claim;
+  const campaign = { source: claim.source, region: claim.region, niche: claim.niche };
+  const scan = { id: scanId };
 
   try {
     let rawResults: unknown;
@@ -226,4 +265,14 @@ export async function runCampaignScan(
     }
     throw err;
   }
+}
+
+/** Claim then run, in one call. The scan is complete when this resolves. */
+export async function runCampaignScan(
+  prisma: PrismaClient,
+  campaignId: string,
+  deps: ScanDeps
+): Promise<ScanOutcome> {
+  const claim = await claimCampaignScan(prisma, campaignId, deps);
+  return executeCampaignScan(prisma, claim, deps);
 }
