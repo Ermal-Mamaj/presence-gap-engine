@@ -119,6 +119,58 @@ describe("a successful scan", () => {
   });
 });
 
+describe("contact details", () => {
+  // What a business's own site would publish, keyed by its website.
+  const siteSays = (contacts: Record<string, { email?: string; phone?: string }>) =>
+    async (business: DetectableBusiness): Promise<PresenceAnalysis> => ({
+      ...(await fakeAnalyze(business)),
+      ...(business.website && contacts[business.website] ? { contacts: contacts[business.website] } : {}),
+    });
+
+  it("saves every contact detail the listing carries", async () => {
+    await scan(
+      campaignId,
+      returning([
+        biz(1, {
+          email: "info@one.al",
+          facebook: "https://www.facebook.com/One",
+          instagram: "https://www.instagram.com/one",
+        }),
+      ])
+    );
+    expect((await leads(campaignId))[0]).toMatchObject({
+      email: "info@one.al",
+      facebook: "https://www.facebook.com/One",
+      instagram: "https://www.instagram.com/one",
+    });
+  });
+
+  it("fills what the listing left out from the business's own site, but never overrides the listing", async () => {
+    const analyze = siteSays({
+      "one.al": { email: "site@one.al", phone: "+355 1111 111" },
+      "two.al": { email: "site@two.al" },
+    });
+    await scan(
+      campaignId,
+      returning([biz(1, { website: "one.al" }), biz(2, { website: "two.al", email: "listing@two.al" })]),
+      { analyze }
+    );
+    const [one, two] = await leads(campaignId);
+    expect(one).toMatchObject({ email: "site@one.al", phone: "+355 1111 111" });
+    expect(two.email).toBe("listing@two.al");
+  });
+
+  it("prefers what the site says now over what an earlier scan remembered, and keeps the memory otherwise", async () => {
+    await scan(campaignId, returning([biz(1, { website: "one.al", email: "old@one.al", phone: "+355 2222 222" })]));
+
+    // The listing has since lost both; the site now publishes a new email only.
+    await scan(campaignId, returning([biz(1, { website: "one.al" })]), {
+      analyze: siteSays({ "one.al": { email: "new@one.al" } }),
+    });
+    expect((await leads(campaignId))[0]).toMatchObject({ email: "new@one.al", phone: "+355 2222 222" });
+  });
+});
+
 describe("empty and partial discovery", () => {
   it("treats an empty result as a successful scan that found nothing", async () => {
     const outcome = await scan(campaignId, returning([]));

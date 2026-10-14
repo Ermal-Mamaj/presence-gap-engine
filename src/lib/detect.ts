@@ -1,3 +1,4 @@
+import { extractSiteContacts, type SiteContacts } from "./contacts";
 import { parseWebsiteUrl, safeFetchPage, SafeFetchError, type FetchedPage } from "./safeFetch";
 
 /**
@@ -28,6 +29,8 @@ export interface DetectableBusiness {
 export interface PresenceAnalysis {
   signals: DetectedSignal[];
   websiteStatus: WebsiteStatus;
+  /** Contact links found on the business's own page, when one was read. */
+  contacts?: SiteContacts;
 }
 
 export interface DetectDeps {
@@ -237,6 +240,7 @@ export async function analyzePresence(
   const fetchPage = deps.fetchPage ?? ((url: URL) => safeFetchPage(url));
   const currentYear = deps.currentYear ?? new Date().getFullYear();
   const signals: DetectedSignal[] = [];
+  let contacts: SiteContacts | undefined;
 
   const website = business.website?.trim();
   if (!website) {
@@ -251,6 +255,8 @@ export async function analyzePresence(
     try {
       const page = await fetchWebsite(parseWebsiteUrl(website), fetchPage);
       signals.push(...analyzePage(page, currentYear));
+      // An error page is the host's, not the business's; only read a real page.
+      if (page.status < 400 && page.isHtml) contacts = extractSiteContacts(page.body);
     } catch (err) {
       signals.push(classifyFailure(toFetchError(err)));
     }
@@ -265,7 +271,11 @@ export async function analyzePresence(
     });
   }
 
-  return { signals, websiteStatus: deriveWebsiteStatus(Boolean(website), signals) };
+  return {
+    signals,
+    websiteStatus: deriveWebsiteStatus(Boolean(website), signals),
+    ...(contacts ? { contacts } : {}),
+  };
 }
 
 export async function detectGaps(business: DetectableBusiness, deps?: DetectDeps): Promise<DetectedSignal[]> {

@@ -72,6 +72,26 @@ A campaign's scan (`src/lib/scan.ts`) is built so that running it again can neve
   its API routes.
 - **Bad records are skipped, not fatal.** A record without a name is dropped; an impossible field (a rating of 47) becomes "unknown". If a source returns records but none are usable, the scan fails instead of silently saving nothing. An empty result is a valid result.
 
+## Contact details
+
+A drafted email needs someone to send it to, so a scan keeps every way to
+reach a business that it can find (`src/lib/contacts.ts`):
+
+- **From the listing.** Phone (falling back to a mobile number), email,
+  Facebook and Instagram, under either OSM spelling (`email` or
+  `contact:email`). The values are free text, so they are normalized: the
+  first usable address in "a; b", a profile link from a bare page name, and
+  share buttons, other hosts and malformed values dropped.
+- **From the business's own site.** When a website check reads a real page,
+  its first `mailto:` and `tel:` links fill in an email or phone the listing
+  left out. They never override the listing, and an error page is never read.
+- **Kept across scans.** As with other fields, a contact a later scan no longer
+  finds is kept rather than erased.
+
+Coverage is thin, which is the point of showing it. In a sample of 80 dentists
+in Tirana on OpenStreetMap, 10 listed a phone, 7 an email and 3 a Facebook
+page. A lead with nothing to go on gets a web-search link on its page.
+
 ## Website checks and certainty
 
 Business websites come from data anyone can edit, so `src/lib/safeFetch.ts` treats every URL as hostile: http(s) only, no credentials, only ports 80/443/8080/8443, every resolved IP checked at connect time (loopback, private, link-local, carrier-grade NAT, multicast, reserved and the IPv6/NAT64/6to4 equivalents are refused), redirects followed manually and re-validated per hop (max 5), one total deadline of 8 seconds covering the body, a 1 MiB size cap that also applies after decompression, and at most 8 requests in flight process-wide. Pages are read as text and never executed.
@@ -112,8 +132,11 @@ Everything a scan concluded is visible, including how sure it was:
   instead of silently vanishing.
 - **Earlier outreach drafts**, collapsed under the current one, with a copy
   button that yields the subject and body as pasteable text.
-- **Filter and sort** the lead table by CRM stage, site status, score or name.
-  This is client-side: every lead is already on the page.
+- **Contact details** per lead: which channels exist in the campaign table, and
+  the phone, email and profile links themselves on the lead page.
+- **Filter and sort** the lead table by CRM stage, site status, whether a lead
+  can be contacted at all, score or name. This is client-side: every lead is
+  already on the page.
 - **CSV export** per campaign (`GET /api/campaigns/<id>/export`). Verified and
   unverified gaps are separate columns, so the certainty split survives into a
   spreadsheet. Fields are RFC 4180 quoted and a leading `=`, `+`, `-` or `@` is

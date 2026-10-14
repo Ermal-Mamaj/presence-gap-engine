@@ -81,6 +81,18 @@ describe("sanitizeRawBusiness", () => {
     expect(result).toEqual({ name: "A" });
   });
 
+  it("normalizes contact details and drops unusable ones", () => {
+    expect(
+      sanitizeRawBusiness({ name: "A", email: " info@a.al; b@b.al ", facebook: "PageA", instagram: "@a.dent" })
+    ).toMatchObject({
+      email: "info@a.al",
+      facebook: "https://www.facebook.com/PageA",
+      instagram: "https://www.instagram.com/a.dent",
+    });
+    const bad = sanitizeRawBusiness({ name: "A", email: "nope", facebook: "https://a.al", instagram: 42 });
+    expect(bad).toEqual({ name: "A" });
+  });
+
   it("drops an absurdly long website instead of storing it", () => {
     expect(sanitizeRawBusiness({ name: "A", website: "http://x.com/" + "a".repeat(5000) })!.website).toBeUndefined();
   });

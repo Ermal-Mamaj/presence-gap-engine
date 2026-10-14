@@ -1,4 +1,5 @@
 import type { Business, Prisma, PrismaClient } from "@/generated/prisma/client";
+import type { SiteContacts } from "./contacts";
 import { dedupeKeyFor } from "./dedupe";
 import { analyzePresence, type DetectableBusiness, type PresenceAnalysis } from "./detect";
 import { computeScore } from "./score";
@@ -76,12 +77,18 @@ interface PreparedLead {
 /**
  * Re-scanning refreshes what the source reports, but never replaces a known
  * value with "unknown": a thinner fetch shouldn't erase a phone number.
+ *
+ * For phone and email the listing comes first, then whatever the business's
+ * own site publishes, then anything remembered from an earlier scan.
  */
-function mergeWithExisting(raw: RawBusiness, existing: Business | undefined) {
+function mergeWithExisting(raw: RawBusiness, existing: Business | undefined, site: SiteContacts = {}) {
   return {
     name: raw.name,
     address: raw.address ?? existing?.address ?? undefined,
-    phone: raw.phone ?? existing?.phone ?? undefined,
+    phone: raw.phone ?? site.phone ?? existing?.phone ?? undefined,
+    email: raw.email ?? site.email ?? existing?.email ?? undefined,
+    facebook: raw.facebook ?? existing?.facebook ?? undefined,
+    instagram: raw.instagram ?? existing?.instagram ?? undefined,
     website: raw.website ?? existing?.website ?? undefined,
     latitude: raw.latitude ?? existing?.latitude ?? undefined,
     longitude: raw.longitude ?? existing?.longitude ?? undefined,
@@ -229,9 +236,10 @@ export async function executeCampaignScan(
       [...unique.entries()],
       deps.concurrency ?? DEFAULT_CONCURRENCY,
       async ([dedupeKey, raw]): Promise<PreparedLead> => {
-        const merged = mergeWithExisting(raw, existingByKey.get(dedupeKey));
-        const analysis = await analyze(merged);
+        const existing = existingByKey.get(dedupeKey);
+        const analysis = await analyze(mergeWithExisting(raw, existing));
         await heartbeat();
+        const merged = mergeWithExisting(raw, existing, analysis.contacts);
         const score = computeScore(analysis.signals, merged);
         return {
           dedupeKey,

@@ -95,6 +95,9 @@ model Business {
   name          String
   address       String?
   phone         String?
+  email         String?  // from the listing, else the first mailto: link on the business's own site
+  facebook      String?  // profile URL
+  instagram     String?  // profile URL
   website       String?
   latitude      Float?
   longitude     Float?

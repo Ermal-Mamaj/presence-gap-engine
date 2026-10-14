@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { contactChannels } from "@/lib/contacts";
 import { CRM_STAGES } from "@/lib/crm";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
@@ -36,6 +37,9 @@ interface Business {
   name: string;
   address: string | null;
   phone: string | null;
+  email: string | null;
+  facebook: string | null;
+  instagram: string | null;
   website: string | null;
   rating: number | null;
   reviewCount: number | null;
@@ -44,6 +48,18 @@ interface Business {
   websiteStatus: WebsiteStatus;
   lastSeenAt: string;
   signals: GapSignal[];
+}
+
+type ContactFilter = "ALL" | "REACHABLE" | "EMAIL" | "NONE";
+
+/** Short labels for the contact column, with the values themselves as tooltips. */
+function contactSummary(b: Business): { label: string; value: string }[] {
+  return [
+    b.email && { label: "Email", value: b.email },
+    b.phone && { label: "Phone", value: b.phone },
+    b.facebook && { label: "Facebook", value: b.facebook },
+    b.instagram && { label: "Instagram", value: b.instagram },
+  ].filter((c): c is { label: string; value: string } => Boolean(c));
 }
 
 interface ScanRun {
@@ -89,6 +105,7 @@ export default function CampaignDetailPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [stageFilter, setStageFilter] = useState<string>("ALL");
   const [siteFilter, setSiteFilter] = useState<string>("ALL");
+  const [contactFilter, setContactFilter] = useState<ContactFilter>("ALL");
   const [sortKey, setSortKey] = useState<SortKey>("score");
 
   // Promise callbacks rather than async/await: state must not be set on the
@@ -143,17 +160,24 @@ export default function CampaignDetailPage() {
   // Filtering and sorting are client-side: a campaign holds tens of leads, all
   // of which are already on the page, so a round trip would only add latency.
   const visible = useMemo(() => {
+    const matchesContact = (b: Business) => {
+      if (contactFilter === "ALL") return true;
+      if (contactFilter === "EMAIL") return Boolean(b.email);
+      const reachable = contactChannels(b).length > 0;
+      return contactFilter === "REACHABLE" ? reachable : !reachable;
+    };
     const rows = (campaign?.businesses ?? []).filter(
       (b) =>
         (stageFilter === "ALL" || b.crmStage === stageFilter) &&
-        (siteFilter === "ALL" || b.websiteStatus === siteFilter)
+        (siteFilter === "ALL" || b.websiteStatus === siteFilter) &&
+        matchesContact(b)
     );
     return rows.sort((a, b) =>
       sortKey === "name" ? a.name.localeCompare(b.name) : b.score - a.score
     );
-  }, [campaign?.businesses, stageFilter, siteFilter, sortKey]);
+  }, [campaign?.businesses, stageFilter, siteFilter, contactFilter, sortKey]);
 
-  const filtering = stageFilter !== "ALL" || siteFilter !== "ALL";
+  const filtering = stageFilter !== "ALL" || siteFilter !== "ALL" || contactFilter !== "ALL";
 
   async function handleRun() {
     setRunning(true);
@@ -309,6 +333,21 @@ export default function CampaignDetailPage() {
                 ))}
               </select>
 
+              <label htmlFor="contact-filter" className="sr-only">
+                Filter by contact details
+              </label>
+              <select
+                id="contact-filter"
+                value={contactFilter}
+                onChange={(e) => setContactFilter(e.target.value as ContactFilter)}
+                className={CONTROL_CLASS}
+              >
+                <option value="ALL">Any contact details</option>
+                <option value="REACHABLE">Can be contacted</option>
+                <option value="EMAIL">Has an email</option>
+                <option value="NONE">No contact found</option>
+              </select>
+
               <label htmlFor="sort-key" className="sr-only">
                 Sort
               </label>
@@ -346,6 +385,7 @@ export default function CampaignDetailPage() {
                   onClick={() => {
                     setStageFilter("ALL");
                     setSiteFilter("ALL");
+                    setContactFilter("ALL");
                   }}
                   className="mt-3 text-sm font-medium text-zinc-900 underline dark:text-zinc-100"
                 >
@@ -360,6 +400,7 @@ export default function CampaignDetailPage() {
                   <th className="px-4 py-3">Business</th>
                   <th className="px-4 py-3">Score</th>
                   <th className="px-4 py-3">Site</th>
+                  <th className="px-4 py-3">Contact</th>
                   <th className="px-4 py-3">Gaps</th>
                   <th className="px-4 py-3">Rating</th>
                   <th className="px-4 py-3">Stage</th>
@@ -392,6 +433,20 @@ export default function CampaignDetailPage() {
                       >
                         {WEBSITE_STATUS_LABEL[b.websiteStatus] ?? b.websiteStatus}
                       </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400">
+                      {contactSummary(b).length ? (
+                        <span className="flex flex-wrap gap-x-1.5">
+                          {contactSummary(b).map((c, i, all) => (
+                            <span key={c.label} title={c.value} className="whitespace-nowrap">
+                              {c.label}
+                              {i < all.length - 1 && ","}
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="text-zinc-400 dark:text-zinc-500">None found</span>
+                      )}
                     </td>
                     {/* Certainty travels with the label. An unverified signal must
                         never read here as an established fact. */}

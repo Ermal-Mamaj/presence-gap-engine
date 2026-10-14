@@ -215,6 +215,30 @@ describe("analyzePresence: page quality signals", () => {
   });
 });
 
+describe("analyzePresence: contact links on the business's own page", () => {
+  const withLinks = GOOD_HTML.replace(
+    "<body>",
+    '<body><a href="mailto:info@example.com">Mail</a><a href="tel:+355691234567">Call</a>'
+  );
+
+  it("returns the page's mailto: and tel: links", async () => {
+    const result = await analyzePresence({ website: "https://example.com" }, deps(async () => page({ body: withLinks })));
+    expect(result.contacts).toEqual({ email: "info@example.com", phone: "+355691234567" });
+  });
+
+  it("does not read contacts from an error page, which belongs to the host", async () => {
+    const result = await analyzePresence(
+      { website: "https://example.com" },
+      deps(async () => page({ status: 503, body: withLinks }))
+    );
+    expect(result.contacts).toBeUndefined();
+  });
+
+  it("has no contacts when no page was read", async () => {
+    expect((await analyzePresence({ website: null }, deps(vi.fn()))).contacts).toBeUndefined();
+  });
+});
+
 describe("detectStaleness", () => {
   const stale = (html: string) => detectStaleness(html, 2026);
 
