@@ -228,6 +228,7 @@ describe("contact details", () => {
       email: "info@one.al",
       facebook: "https://www.facebook.com/One",
       instagram: "https://www.instagram.com/one",
+      score: 48, // 40 * (1 + 0.1 email + 0.1 social); the two profiles are one channel
     });
   });
 

@@ -111,15 +111,17 @@ export function extractSiteContacts(html: string): SiteContacts {
   return contacts;
 }
 
+export type ContactChannel = "phone" | "email" | "social";
+
 /** Whether the lead can be reached at all, and how many distinct ways. */
 export function contactChannels(business: {
   phone?: string | null;
   email?: string | null;
   facebook?: string | null;
   instagram?: string | null;
-}): Array<"phone" | "email" | "social"> {
+}): ContactChannel[] {
   const has = (v: string | null | undefined) => typeof v === "string" && v.trim() !== "";
-  const channels: Array<"phone" | "email" | "social"> = [];
+  const channels: ContactChannel[] = [];
   if (has(business.phone)) channels.push("phone");
   if (has(business.email)) channels.push("email");
   if (has(business.facebook) || has(business.instagram)) channels.push("social");
