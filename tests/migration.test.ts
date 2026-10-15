@@ -132,3 +132,29 @@ describe("migrations", () => {
     }
   });
 });
+
+describe("the message templates migration", () => {
+  it("keeps every existing draft when it rebuilds the Outreach table", () => {
+    const db = new Database(path.join(tempDir, "templates.db"));
+    try {
+      const at = migrations.findIndex((m) => m.endsWith("_message_templates"));
+      expect(at).toBeGreaterThan(0);
+      for (const name of migrations.slice(0, at)) db.exec(sql(name));
+      db.exec(`
+        INSERT INTO "Campaign" ("id","name","region","niche","updatedAt") VALUES ('c1','n','r','n',CURRENT_TIMESTAMP);
+        INSERT INTO "Business" ("id","campaignId","name","dedupeKey","updatedAt") VALUES ('b1','c1','B','k',CURRENT_TIMESTAMP);
+        INSERT INTO "Outreach" ("id","businessId","channel","subject","body","openLine","sentAt")
+          VALUES ('o1','b1','phone','s','the body','o','2026-10-01 10:00:00');
+      `);
+
+      db.exec(sql(migrations[at]));
+
+      expect(db.prepare(`SELECT * FROM "Outreach"`).all()).toEqual([
+        expect.objectContaining({ id: "o1", channel: "phone", body: "the body", sentAt: "2026-10-01 10:00:00", templateId: null }),
+      ]);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
