@@ -16,6 +16,8 @@ export function createTestDb() {
   const prisma = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: file }) });
   return {
     prisma,
+    /** The database file, for code that opens its own client from DATABASE_URL. */
+    file,
     async cleanup() {
       await prisma.$disconnect();
       fs.rmSync(dir, { recursive: true, force: true });
