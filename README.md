@@ -48,7 +48,7 @@ A campaign's scan (`src/lib/scan.ts`) is built so that running it again can neve
 - **Nothing is deleted.** Discovery and website checks run in memory first. Results are then applied in one database transaction that only creates or updates leads, so a failed or partial scan leaves earlier leads untouched. Leads, their CRM stage, notes, outreach drafts and stage history are never removed by a scan.
 - **Reruns update in place.** A lead's identity is its source id (or, without one, its normalized name + address), enforced by a unique key per campaign (`src/lib/dedupe.ts`). A rerun refreshes the data and replaces the lead's gap signals; it does not add duplicates. A value the source stops reporting is kept rather than erased.
 - **Each scan is recorded** as a `ScanRun` (status, found/created/updated/skipped counts, error). `Campaign.status` reflects the latest scan; a `FAILED` campaign still shows the leads from its last good scan.
-- **One scan at a time per campaign.** The campaign is claimed with a single atomic update; a second request gets HTTP 409. A scan that crashed is considered abandoned after 15 minutes and can be rerun.
+- **One scan at a time per campaign.** The campaign is claimed with a single atomic update; a second request gets HTTP 409. A running scan refreshes its claim as websites are checked, so a slow scan is never mistaken for a crashed one; a scan that makes no progress for 15 minutes is considered abandoned and can be rerun.
 - **The scan outlives its request.** `POST /api/campaigns/<id>/run` claims the
   campaign, answers `202 Accepted` with the `ScanRun` id, and runs the scan via
   Next's `after` once the response is sent; the page then polls the campaign
@@ -60,6 +60,16 @@ A campaign's scan (`src/lib/scan.ts`) is built so that running it again can neve
   duration, so a serverless host still caps it — `maxDuration` is set to 300s
   where the platform honours it, and a run killed mid-flight is reclaimed by the
   staleness rule above.
+- **Where it runs.** The supported setup is a long-running Node server
+  (`next start`, or the same in Docker). There `after` is fully supported and
+  no platform time limit applies, since `maxDuration` is a hint that
+  deployment platforms read, not something `next start` enforces. Stopping the
+  server only waits a short drain period for pending `after` work, so a
+  restart mid-scan abandons that scan, and the staleness rule frees the
+  campaign. Serverless hosts are not supported as-is: the SQLite file does not
+  survive there, and after moving to Postgres (see Setup) a scan still has to
+  fit the platform's limit. Static export cannot work, because the app needs
+  its API routes.
 - **Bad records are skipped, not fatal.** A record without a name is dropped; an impossible field (a rating of 47) becomes "unknown". If a source returns records but none are usable, the scan fails instead of silently saving nothing. An empty result is a valid result.
 
 ## Website checks and certainty
@@ -108,8 +118,10 @@ Everything a scan concluded is visible, including how sure it was:
   unverified gaps are separate columns, so the certainty split survives into a
   spreadsheet. Fields are RFC 4180 quoted and a leading `=`, `+`, `-` or `@` is
   neutralized, because the rows are third-party data and the destination is
-  Excel (`src/lib/csv.ts`). The export always covers the whole campaign, not the
-  filtered view.
+  Excel (`src/lib/csv.ts`). The guard is a leading apostrophe, and Excel shows
+  it when opening a CSV, so a phone number reads `'+355 69 123 4567`. Without
+  the guard, a compact number like `+355691234567` opens as `3.56E+11`. The
+  export always covers the whole campaign, not the filtered view.
 
 ## Setup
 

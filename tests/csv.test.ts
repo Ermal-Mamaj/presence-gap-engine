@@ -59,9 +59,11 @@ describe("escapeCsvField: spreadsheet formula injection", () => {
     expect(escapeCsvField('=HYPERLINK("http://x","go")')).toBe('"\'=HYPERLINK(""http://x"",""go"")"');
   });
 
-  it("keeps a phone number readable", () => {
-    // The apostrophe is a text marker a spreadsheet does not display.
+  it("keeps a phone number as text, at the cost of a visible apostrophe", () => {
+    // Excel shows the apostrophe when it opens a CSV. Without it, a compact
+    // number opens as 3.56E+11 and loses its plus, which is worse.
     expect(escapeCsvField("+355 69 123 4567")).toBe("'+355 69 123 4567");
+    expect(escapeCsvField("+355691234567")).toBe("'+355691234567");
   });
 
   it("does not touch a formula character that isn't leading", () => {

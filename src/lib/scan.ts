@@ -119,6 +119,11 @@ export async function claimCampaignScan(
   if (!campaign) throw new CampaignNotFoundError();
 
   // Single atomic statement: of two simultaneous requests exactly one matches.
+  //
+  // Prisma stores SQLite DateTime as ISO-8601 TEXT, and SQLite compares storage
+  // class before value, so an integer updatedAt written by raw SQL sorts below
+  // every TEXT cutoff and makes the campaign look permanently stale. Write it
+  // through Prisma, as the scan's heartbeat does.
   const staleCutoff = new Date(now().getTime() - (deps.staleAfterMs ?? DEFAULT_STALE_AFTER_MS));
   const claim = await prisma.campaign.updateMany({
     where: { id: campaignId, OR: [{ status: { not: "RUNNING" } }, { updatedAt: { lt: staleCutoff } }] },
@@ -143,6 +148,28 @@ export async function claimCampaignScan(
 }
 
 /**
+ * Keeps a claim fresh while its scan makes progress. Staleness is read from
+ * Campaign.updatedAt, so a scan that runs past the window without refreshing
+ * it would be taken over while still alive. Beats at most three times per
+ * window, and only refreshes a campaign that is still RUNNING.
+ */
+function claimHeartbeat(prisma: PrismaClient, campaignId: string, now: () => Date, staleAfterMs: number) {
+  const interval = staleAfterMs / 3;
+  let last = now().getTime();
+  return async () => {
+    const at = now();
+    if (at.getTime() - last < interval) return;
+    last = at.getTime();
+    try {
+      await prisma.campaign.updateMany({ where: { id: campaignId, status: "RUNNING" }, data: { updatedAt: at } });
+    } catch (err) {
+      // A missed beat only risks the stale rule firing early; not worth failing the scan.
+      console.error("Could not refresh scan claim", err);
+    }
+  };
+}
+
+/**
  * Runs the claimed scan without ever putting saved leads at risk.
  *
  * 1. Discover, validate and analyze everything in memory. If any of this
@@ -163,6 +190,7 @@ export async function executeCampaignScan(
   const now = deps.now ?? (() => new Date());
   const analyze = deps.analyze ?? ((b: DetectableBusiness) => analyzePresence(b));
   const { campaignId, scanId } = claim;
+  const heartbeat = claimHeartbeat(prisma, campaignId, now, deps.staleAfterMs ?? DEFAULT_STALE_AFTER_MS);
   const campaign = { source: claim.source, region: claim.region, niche: claim.niche };
   const scan = { id: scanId };
 
@@ -203,6 +231,7 @@ export async function executeCampaignScan(
       async ([dedupeKey, raw]): Promise<PreparedLead> => {
         const merged = mergeWithExisting(raw, existingByKey.get(dedupeKey));
         const analysis = await analyze(merged);
+        await heartbeat();
         const score = computeScore(analysis.signals, merged);
         return {
           dedupeKey,
