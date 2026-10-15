@@ -158,6 +158,7 @@ Everything a scan concluded is visible, including how sure it was:
 - **Earlier outreach drafts**, collapsed under the current one, with a copy
   button that yields the subject and body as pasteable text.
 - **Why each score is what it is.** The lead page lists every term: each gap's points (an unverified one at half), each viability credit, any ghost penalty and the cap. It is computed by the same function as the score, and if the stored score came from weights that have since changed, it says so and points to **Recalculate scores**.
+- **A map** of the filtered leads (**Table / Map** on a campaign): one dot per lead with coordinates, coloured by site status and sized by score, with a popup linking to the lead. Leaflet loads only when the map is opened; tiles come from OpenStreetMap with its required attribution, and lead names are escaped before reaching the popup.
 - **Contact details** per lead: which channels exist in the campaign table, and
   the phone, email and profile links themselves on the lead page.
 - **Filter and sort** the lead table by CRM stage, site status, whether a lead
