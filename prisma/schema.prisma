@@ -98,6 +98,7 @@ model Business {
   address       String?
   phone         String?
   email         String?  // from the listing, else the first mailto: link on the business's own site
+  emailFromSite Boolean  @default(false) // true when email came from the site, which may be a web agency's credit
   facebook      String?  // profile URL
   instagram     String?  // profile URL
   website       String?

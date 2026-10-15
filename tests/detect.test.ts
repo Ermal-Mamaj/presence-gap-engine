@@ -409,3 +409,11 @@ describe("websiteNeedsFetch", () => {
     expect(websiteNeedsFetch("klinika.al")).toBe(true);
   });
 });
+
+describe("analyzePresence: a page that merely links to a domain marketplace", () => {
+  it("is still judged as the business's own page", async () => {
+    const body = GOOD_HTML.replace("<body>", '<body><a href="https://www.afternic.com/forsale/old-name.com">our old domain</a>');
+    const result = await analyzePresence({ website: "https://example.com" }, deps(async () => page({ body })));
+    expect(keys(result.signals)).not.toContain("site_parked");
+  });
+});

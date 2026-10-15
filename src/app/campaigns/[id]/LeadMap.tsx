@@ -35,13 +35,15 @@ type Placed = MapLead & { latitude: number; longitude: number };
  * policy requires.
  *
  * The map is created once. A reload of the campaign (every 2s during a scan)
- * only redraws the dots, and the view is re-fitted only when the set of leads
- * shown changes, so the user's pan, zoom and open popup survive.
+ * redraws the dots only when something about them changed, so the user's
+ * pan, zoom and open popup survive an unchanged reload; the view is re-fitted
+ * only when the set of leads shown changes.
  */
 export default function LeadMap({ leads }: { leads: MapLead[] }) {
   const container = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<{ L: typeof Leaflet; map: Leaflet.Map; dots: Leaflet.LayerGroup } | null>(null);
   const fittedTo = useRef<string | null>(null);
+  const drawn = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,6 +67,11 @@ export default function LeadMap({ leads }: { leads: MapLead[] }) {
     if (!map) return;
     const { L, dots } = map;
     const placed = leads.filter((l): l is Placed => l.latitude !== null && l.longitude !== null);
+
+    // Redrawing closes an open popup, so skip it when nothing a dot shows changed.
+    const look = JSON.stringify(placed.map((l) => [l.id, l.name, l.latitude, l.longitude, l.score, l.websiteStatus]));
+    if (look === drawn.current) return;
+    drawn.current = look;
 
     dots.clearLayers();
     for (const lead of placed) {
@@ -92,7 +99,8 @@ export default function LeadMap({ leads }: { leads: MapLead[] }) {
         maxZoom: 16,
       });
     } else {
-      map.map.setView([41.33, 19.82], 12);
+      // Nothing to show: the whole world, rather than a guess at the region.
+      map.map.setView([20, 0], 2);
     }
   }, [map, leads]);
 
