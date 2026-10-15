@@ -28,6 +28,17 @@ export function normalizePhone(raw: string | null | undefined): string | undefin
   return (value.match(/\d/g)?.length ?? 0) >= 6 ? value : undefined;
 }
 
+/**
+ * A WhatsApp chat link for a phone number, when the number is international
+ * ("+355 69 …"). A local number ("069 …") has no country code to put in the
+ * link, and guessing one would open a chat with a stranger.
+ */
+export function whatsappLink(raw: string | null | undefined): string | undefined {
+  const phone = normalizePhone(raw);
+  if (!phone?.startsWith("+")) return undefined;
+  return `https://wa.me/${phone.replace(/\D/g, "")}`;
+}
+
 export type SocialNetwork = "facebook" | "instagram";
 
 const SOCIAL: Record<SocialNetwork, { canonicalHost: string; hosts: string[] }> = {
