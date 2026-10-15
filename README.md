@@ -30,11 +30,14 @@ Two pluggable sources behind a common interface (`src/lib/sources/types.ts`):
   Both services are shared and often busy, so the client
   (`src/lib/sources/osmClient.ts`) is polite and patient: Nominatim gets at
   most one request per second across the app, with each region cached for a
-  day, as its usage policy asks. An Overpass query that the main instance
-  turns away (busy, rate-limited, timed out, out of memory) goes to a mirror,
-  then both are retried after 15s and 45s. A refusal every server would
-  repeat, such as a malformed query, fails at once. Set `OVERPASS_URLS`
-  (comma-separated) to use other instances.
+  day and asked for only once when several scans want it, as its usage
+  policy asks; a busy Nominatim is tried once more. An Overpass query that
+  the main instance turns away (busy, rate-limited, unreachable) goes to a
+  mirror, then both are retried after 15s and 45s, or later if a server's
+  `Retry-After` asks for it, all within 150 seconds. A server's final answer
+  (a 400, a moved endpoint) drops only that server. A query too heavy for
+  every server fails at once, suggesting a smaller region, since waiting
+  won't help. Set `OVERPASS_URLS` (comma-separated) to use other instances.
 - **Google Maps scraper** (`GOOGLE_MAPS_SCRAPER`, experimental) — uses
   Playwright to scrape Google Maps search results and each listing's detail
   pane for name, address, phone, website, rating, and review count.

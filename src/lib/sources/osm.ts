@@ -1,7 +1,7 @@
-import { createGeocoder, fetchOverpass } from "./osmClient";
+import { fetchOverpass, sharedGeocoder } from "./osmClient";
 import type { BusinessSource, RawBusiness, SearchBox } from "./types";
 
-const geocode = createGeocoder();
+const geocode = sharedGeocoder();
 
 // Best-effort niche -> OSM tag mapping. Falls back to a free-text name/shop search
 // when the niche isn't in the table, since OSM's tagging vocabulary is huge and
