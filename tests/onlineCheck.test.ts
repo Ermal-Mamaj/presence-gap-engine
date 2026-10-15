@@ -41,6 +41,11 @@ describe("urlsIn", () => {
       "http://y.example",
     ]);
   });
+
+  it("ends a URL at a backslash, as in Groq's JSON-escaped tool output", () => {
+    // Found live: "http://studiodentareaa.com/\nL2" and "...com/\\" came back as URLs.
+    expect(urlsIn(JSON.stringify("see http://studiodentareaa.com/\nL2 and https://a.al\\"))).toEqual(["http://studiodentareaa.com/", "https://a.al"]);
+  });
 });
 
 describe("couldBeOwnSite", () => {
@@ -50,6 +55,10 @@ describe("couldBeOwnSite", () => {
     ["https://www.google.com/maps/place/x", false],
     ["https://www.tripadvisor.com/x", false],
     ["https://www.cylex.al/arberi", false],
+    ["https://exa.ai/library/place/h7cxhh05k4r", false],
+    ["https://al.geoview.info/studio_dentare_aa,5849142224n", false],
+    ["https://dentix.com", true], // not x.com
+
     ["ftp://arberi.al", false],
     ["not a url", false],
   ])("%s → %s", (url, expected) => {
@@ -75,9 +84,11 @@ describe("matchPage", () => {
     const cityNamed = { ...target, name: "Dentist ne Tirane", phone: null };
     const anyTiranaPage = { url: "https://dentistnetirane.example", html: "Klinika dentare në Tiranë" };
     expect(matchPage(cityNamed, anyTiranaPage).strong).toBe(false);
-    // With no distinctive word left, the whole name must appear, and alone it is only "unsure".
-    const theirPage = { url: "https://dentistnetirane.example", html: "Dentist ne Tirane, Rruga e Kavajes" };
-    expect(matchPage(cityNamed, theirPage)).toMatchObject({ strong: false, name: true });
+    // With no word of its own left, the name is on countless pages: it never counts, only the phone does.
+    const theirPage = { url: "https://x.example", html: "Dentist ne Tirane, Rruga e Kavajes" };
+    expect(matchPage(cityNamed, theirPage)).toMatchObject({ strong: false, name: false });
+    // Found live: "Klinikë Dentare" was "maybe online" at another clinic's site.
+    expect(matchPage({ ...target, name: "Klinikë Dentare" }, { url: "https://klinikakristi.al", html: "Klinikë Dentare Kristi" }).name).toBe(false);
   });
 
   it("is strong with the name and the street, or a domain made of the name; weak with the name alone", () => {
@@ -92,23 +103,30 @@ describe("checkLeadOnline", () => {
   it("finds the page that matches, skipping directories and pages that fail", async () => {
     const fetched: string[] = [];
     const result = await checkLeadOnline(target, {
-      provider: provider(["https://www.facebook.com/arberi", "https://down.example", "https://arberi.al"]),
+      provider: provider(["https://www.facebook.com/arberi", "https://arberi.down.example", "https://arberi.al"]),
       fetchPage: async (url) => {
         fetched.push(url.hostname);
-        if (url.hostname === "down.example") throw new Error("ECONNREFUSED");
+        if (url.hostname === "arberi.down.example") throw new Error("ECONNREFUSED");
         return page(url.toString(), "<h1>Klinika Arbëri</h1><p>+355 69 123 4567</p>");
       },
     });
-    expect(fetched).toEqual(["down.example", "arberi.al"]);
+    expect(fetched).toEqual(["arberi.down.example", "arberi.al"]);
     expect(result).toMatchObject({ verdict: "found", url: "https://arberi.al/" });
   });
 
-  it("is unsure when only the name matched, and none when nothing did", async () => {
+  it("is unsure when only the name matched, here; none when nothing did, or only a namesake elsewhere", async () => {
     const nameOnly = await checkLeadOnline(target, {
       provider: provider(["https://maybe.example"]),
-      fetchPage: async (url) => page(url.toString(), "Arbëri"),
+      fetchPage: async (url) => page(url.toString(), "Arbëri, Tiranë"),
     });
     expect(nameOnly.verdict).toBe("unsure");
+
+    // Found live: "Ada Dental" in Tirana was "maybe online" at a clinic in Romania.
+    const namesake = await checkLeadOnline(target, {
+      provider: provider(["https://maybe.example"]),
+      fetchPage: async (url) => page(url.toString(), "Arbëri, București"),
+    });
+    expect(namesake.verdict).toBe("none");
 
     const nothing = await checkLeadOnline(target, {
       provider: provider(["https://other.example"]),
@@ -117,12 +135,74 @@ describe("checkLeadOnline", () => {
     expect(nothing).toEqual({ verdict: "none", url: null, evidence: ["searched; 1 candidate page checked, none matched"] });
   });
 
+  it("is only unsure about a matching page on a domain that isn't the name: it may be a listing", async () => {
+    // Found live: an unknown directory showed the phone, name and street, and was taken as the site.
+    const result = await checkLeadOnline(target, {
+      provider: provider(["https://new-directory.example/place/123"]),
+      fetchPage: async (url) => page(url.toString(), "Klinika Dentare Arbëri, Rruga Myslym Shyri, +355 69 123 4567"),
+    });
+    expect(result).toMatchObject({ verdict: "unsure", url: "https://new-directory.example/place/123" });
+    expect(result.evidence.at(-1)).toMatch(/may be a listing/);
+  });
+
+  it("tries domains made of the name first, and reads a name of generic words run together", async () => {
+    const fetched: string[] = [];
+    const result = await checkLeadOnline(
+      { ...target, name: "Studio Dentare aa", phone: "0692050118" },
+      {
+        provider: provider([1, 2, 3, 4, 5].map((n) => `https://listing${n}.example/aa`).concat("http://studiodentareaa.com/")),
+        fetchPage: async (url) => {
+          fetched.push(url.hostname);
+          return page(url.toString(), "Studio Dentare aa · 069 205 0118");
+        },
+      }
+    );
+    expect(fetched[0]).toBe("studiodentareaa.com");
+    expect(result).toMatchObject({ verdict: "found", url: "http://studiodentareaa.com/" });
+  });
+
   it("doesn't trust an error page", async () => {
     const result = await checkLeadOnline(target, {
-      provider: provider(["https://arberi.al"]),
+      provider: provider(["https://other.example"]),
       fetchPage: async (url) => page(url.toString(), "+355 69 123 4567", { status: 404 }),
     });
     expect(result.verdict).toBe("none");
+  });
+
+  it("is unsure about a site named after the lead that doesn't load: it may be its old site", async () => {
+    // Found live: studiodentareaa.com no longer answers.
+    const result = await checkLeadOnline(target, {
+      provider: provider(["https://arberi.al"]),
+      fetchPage: async () => {
+        throw new Error("ENOTFOUND");
+      },
+    });
+    expect(result).toMatchObject({ verdict: "unsure", url: "https://arberi.al", evidence: [expect.stringMatching(/didn't load/)] });
+
+    // Found live: "Klinikë Dentare" took klinikedentare.com, a name anyone could have, as its old site.
+    const generic = await checkLeadOnline({ ...target, name: "Klinikë Dentare" }, {
+      provider: provider(["http://www.klinikedentare.com/"]),
+      fetchPage: async () => {
+        throw new Error("ENOTFOUND");
+      },
+    });
+    expect(generic.verdict).toBe("none");
+  });
+
+  it("wants the street or the area on a namesake domain without the phone: it may be a business elsewhere", async () => {
+    // Found live: Klinika Dentare MonDent in Tirana was "found" at mondent.ba, a clinic in Bosnia.
+    const mondent = { ...target, name: "Klinika Dentare MonDent", phone: "+355697476106", address: "Rruga Pandi Dardha" };
+    const elsewhere = await checkLeadOnline(mondent, {
+      provider: provider(["https://mondent.ba/en/"]),
+      fetchPage: async (url) => page(url.toString(), "MonDent dental clinic, Sarajevo, +387 33 123 456"),
+    });
+    expect(elsewhere).toMatchObject({ verdict: "unsure", evidence: expect.arrayContaining([expect.stringMatching(/another business/)]) });
+
+    const here = await checkLeadOnline(mondent, {
+      provider: provider(["https://mondent.al/"]),
+      fetchPage: async (url) => page(url.toString(), "MonDent, klinikë dentare në Tiranë"),
+    });
+    expect(here.verdict).toBe("found");
   });
 });
 
@@ -156,9 +236,18 @@ describe("search providers", () => {
     });
   });
 
-  it("marks a rate limit as busy, so a run can wait and retry", async () => {
-    stub({ error: "rate limited" }, 429);
-    await expect(tavilyProvider("k").search(target)).rejects.toMatchObject({ busy: true });
+  it("marks a rate limit as busy, with the wait it asks for and its message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ error: { message: "Rate limit reached for model `openai/gpt-oss-20b`" } }, { status: 429, headers: { "retry-after": "7" } })
+      )
+    );
+    await expect(groqProvider("k").search(target)).rejects.toMatchObject({
+      busy: true,
+      retryAfterMs: 7_000,
+      message: "Groq error 429: Rate limit reached for model `openai/gpt-oss-20b`",
+    });
   });
 
   it("treats Tavily's out-of-credits answer as a limit", async () => {
@@ -207,6 +296,16 @@ describe("fallbackProvider", () => {
     clock = 61_000;
     expect(await both.search(target)).toEqual(["https://from-groq.al"]);
     expect(tavily.calls).toBe(2);
+  });
+
+  it("rests a provider for as long as it asked, when it said", async () => {
+    let clock = 0;
+    const groq = scripted("groq", [new SearchError("Groq error 429: limit", true, 5_000), ["https://from-groq.al"]]);
+    const tavily = scripted("tavily", [["https://from-tavily.al"]]);
+    const both = fallbackProvider([groq, tavily], () => clock);
+    await both.search(target);
+    clock = 6_000;
+    expect(await both.search(target)).toEqual(["https://from-groq.al"]);
   });
 
   it("passes over a rejected key for good", async () => {
@@ -292,7 +391,25 @@ describe("runOnlineCheck", () => {
     expect((await runOnlineCheck(prisma, campaignId, 20, { provider: { name: "tavily", search } })).total).toBe(0);
   });
 
-  it("waits and retries a busy search once, then stops and says why, keeping verdicts so far", async () => {
+  it("waits as long as a busy provider asks before retrying", async () => {
+    await offlineLead("A");
+    let calls = 0;
+    const waits: number[] = [];
+    const progress = await runOnlineCheck(prisma, campaignId, 20, {
+      provider: {
+        name: "groq",
+        search: async () => {
+          if (++calls === 1) throw new SearchError("Groq error 429: try again in 7s", true, 7_000);
+          return [];
+        },
+      },
+      sleep: async (ms) => void waits.push(ms),
+    });
+    expect(waits).toEqual([7_000]);
+    expect(progress).toMatchObject({ done: 1, none: 1, error: null });
+  });
+
+  it("retries a busy search three times, then stops and says why, keeping verdicts so far", async () => {
     await offlineLead("A", { score: 50 });
     await offlineLead("B", { score: 40 });
     let calls = 0;
@@ -308,7 +425,7 @@ describe("runOnlineCheck", () => {
       },
       sleep: async (ms) => void waits.push(ms),
     });
-    expect(waits).toEqual([20_000]);
+    expect(waits).toEqual([20_000, 20_000, 20_000]);
     expect(progress).toMatchObject({ done: 1, none: 1, error: "Tavily error 429: slow down" });
   });
 
