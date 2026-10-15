@@ -193,7 +193,9 @@ describe("the website-check limit", () => {
     await scan(campaignId, returning([biz(1, { website: "moved.al" })]), { maxWebsiteChecks: 0, now: at(2_000) });
 
     const [one] = await leads(campaignId);
-    expect(one).toMatchObject({ website: "moved.al", websiteStatus: "NEEDS_CHECK", siteCheckedAt: new Date(1_000) });
+    // Nothing was fetched for moved.al, so it carries no check time, and the
+    // next scan takes it first.
+    expect(one).toMatchObject({ website: "moved.al", websiteStatus: "NEEDS_CHECK", siteCheckedAt: null });
     expect(one.signals.map((s) => s.key)).toEqual(["site_check_deferred"]);
   });
 
@@ -706,5 +708,35 @@ describe("claiming a scan separately from running it", () => {
     // FAILED is not RUNNING, so the next claim succeeds without waiting out
     // the staleness window.
     await expect(scan(campaignId, returning([biz(1)]))).resolves.toMatchObject({ created: 1 });
+  });
+});
+
+describe("website checks that need no request", () => {
+  it("settles social pages without using up the website-check limit", async () => {
+    // Real detection: a Facebook page is decided from the URL, never fetched.
+    const fetched: string[] = [];
+    const analyze = async (b: DetectableBusiness) => {
+      const { analyzePresence } = await import("@/lib/detect");
+      return analyzePresence(b, {
+        fetchPage: async (url) => {
+          fetched.push(url.hostname);
+          return { status: 200, finalUrl: url.toString(), contentType: "text/html", isHtml: true, body: "<html><head><meta name=viewport><meta name=description content=x></head></html>", truncated: false, redirects: 0 };
+        },
+      });
+    };
+    const outcome = await scan(
+      campaignId,
+      returning([
+        biz(1, { website: "https://www.facebook.com/one" }),
+        biz(2, { website: "https://www.facebook.com/two" }),
+        biz(3, { website: "three.al" }),
+      ]),
+      { analyze, maxWebsiteChecks: 1 }
+    );
+    expect(outcome.deferred).toBe(0);
+    expect(fetched).toEqual(["three.al"]);
+    const saved = await leads(campaignId);
+    expect(saved.filter((b) => b.websiteStatus === "NONE_FOUND").map((b) => b.name)).toEqual(["Business 1", "Business 2"]);
+    expect(saved.every((b) => b.siteCheckedAt !== null)).toBe(true);
   });
 });

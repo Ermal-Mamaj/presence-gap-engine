@@ -68,3 +68,18 @@ describe("pipelineSummary", () => {
     expect(all.total).toBeGreaterThanOrEqual(7);
   });
 });
+
+describe("pipelineSummary: corrected mis-clicks", () => {
+  it("does not count a stage that was stepped straight back", async () => {
+    // CONTACTED, then REPLIED by mistake, then back to CONTACTED.
+    const id = await campaignWith([{ stage: "CONTACTED", history: ["CONTACTED", "REPLIED", "CONTACTED"] }]);
+    const summary = await pipelineSummary(prisma, id);
+    expect(summary.reached.find((r) => r.stage === "REPLIED")!.count).toBe(0);
+    expect(summary.replyRate).toBe(0);
+  });
+
+  it("still counts a stage the lead left by moving on, or by dying", async () => {
+    const id = await campaignWith([{ stage: "DEAD", history: ["CONTACTED", "REPLIED", "DEAD"] }]);
+    expect((await pipelineSummary(prisma, id)).reached.find((r) => r.stage === "REPLIED")!.count).toBe(1);
+  });
+});

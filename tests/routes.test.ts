@@ -6,23 +6,36 @@
  */
 import { NextRequest } from "next/server";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import path from "node:path";
 import { createTestDb } from "./helpers/db";
 
 const db = createTestDb();
 const { prisma } = db;
-afterAll(() => db.cleanup());
 
 // The app's own client reads DATABASE_URL when src/lib/prisma.ts loads, so
-// point it at this file's database before importing any route.
-process.env.DATABASE_URL = `file:${db.file}`;
+// point it at this file's database before importing any route. Forward
+// slashes, as globalSetup.ts writes it, so the value is a well-formed URL.
+process.env.DATABASE_URL = `file:${db.file.split(path.sep).join("/")}`;
+
+// No test may reach Claude: an invalid key and an unroutable base URL make
+// any call that slips past the "nothing verified to say" guards fail at once,
+// instead of spending money on a machine that has real credentials.
+process.env.ANTHROPIC_API_KEY = "test-key-never-valid";
+process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:9";
 
 // A scan runs after the response through next/server's `after`, which needs
-// a live request scope; here it simply runs the callback. The source is a
-// stub, so no test reaches the network.
-const pendingAfter: Promise<unknown>[] = [];
+// a live request scope. Here the callback is queued, not run, so a test can
+// check the response came first, then run it with runPendingAfter(). The
+// source is a stub, so no test reaches the network.
+let pendingAfter: (() => Promise<unknown>)[] = [];
+async function runPendingAfter() {
+  const queued = pendingAfter;
+  pendingAfter = [];
+  await Promise.all(queued.map((fn) => fn()));
+}
 vi.mock("next/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("next/server")>();
-  return { ...actual, after: (fn: () => Promise<unknown>) => void pendingAfter.push(fn()) };
+  return { ...actual, after: (fn: () => Promise<unknown>) => void pendingAfter.push(fn) };
 });
 vi.mock("@/lib/sources", () => ({
   getSource: () => ({ id: "OSM", search: async () => [{ name: "Klinika", sourceRef: "osm:node/1", phone: "+355 1" }] }),
@@ -41,10 +54,16 @@ const sent = await import("@/app/api/outreach/[id]/sent/route");
 const followups = await import("@/app/api/followups/route");
 const pipeline = await import("@/app/api/pipeline/route");
 
-// The routes opened the app's own client on this database; close it before the
-// file is deleted (after-hooks run in reverse, so this runs before cleanup).
-const { prisma: appPrisma } = await import("@/lib/prisma");
-afterAll(() => appPrisma.$disconnect());
+const { MAX_BULK_DRAFTS } = await import("@/lib/drafting");
+
+// One teardown, in order: finish any scan still queued, close the app's own
+// client (Windows won't delete an open database file), then delete the file.
+afterAll(async () => {
+  await runPendingAfter().catch(() => undefined);
+  const { prisma: appPrisma } = await import("@/lib/prisma");
+  await appPrisma.$disconnect();
+  await db.cleanup();
+});
 
 const request = (method: string, body?: unknown, url = "http://test.local/api") =>
   new NextRequest(url, {
@@ -84,6 +103,41 @@ describe("POST /api/campaigns", () => {
   });
 });
 
+describe("reading campaigns and leads", () => {
+  it("lists campaigns with their lead counts", async () => {
+    const { id } = await newCampaign({ name: "Listed" });
+    await newLead(id);
+    const list = await (await campaigns.GET()).json();
+    expect(list.find((c: { id: string }) => c.id === id)).toMatchObject({ name: "Listed", _count: { businesses: 1 } });
+  });
+
+  it("reads a campaign with its leads, their signals and draft counts, and its scans", async () => {
+    const { id } = await newCampaign();
+    await newLead(id, { signals: { create: [{ key: "no_website", label: "No website found", severity: 40 }] } });
+    const res = await campaign.GET(request("GET"), params(id));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.scans).toEqual([]);
+    expect(body.businesses[0]).toMatchObject({
+      signals: [expect.objectContaining({ key: "no_website" })],
+      _count: { outreach: 0 },
+    });
+  });
+
+  it("reads a lead with its signals, drafts, history and campaign", async () => {
+    const { id: campaignId } = await newCampaign({ name: "Owner" });
+    const { id } = await newLead(campaignId, { outreach: { create: [{ subject: "s", openLine: "o", body: "b" }] } });
+    const res = await lead.GET(request("GET"), params(id));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      signals: [],
+      stageChanges: [],
+      outreach: [expect.objectContaining({ subject: "s" })],
+      campaign: { name: "Owner" },
+    });
+  });
+});
+
 describe("/api/campaigns/[id]", () => {
   it("answers 404 for a campaign that does not exist", async () => {
     expect((await campaign.GET(request("GET"), params("nope"))).status).toBe(404);
@@ -102,10 +156,14 @@ describe("/api/campaigns/[id]", () => {
   it("refuses to delete during a scan, then deletes with 204", async () => {
     const { id } = await newCampaign();
     await prisma.campaign.update({ where: { id }, data: { status: "RUNNING" } });
+    await newLead(id);
     const refused = await campaign.DELETE(request("DELETE"), params(id));
     expect(refused.status).toBe(409);
+    expect(await prisma.business.count({ where: { campaignId: id } })).toBe(1);
     await prisma.campaign.update({ where: { id }, data: { status: "DONE" } });
     expect((await campaign.DELETE(request("DELETE"), params(id))).status).toBe(204);
+    expect(await prisma.campaign.findUnique({ where: { id } })).toBeNull();
+    expect(await prisma.business.count({ where: { campaignId: id } })).toBe(0);
   });
 });
 
@@ -117,12 +175,15 @@ describe("POST /api/campaigns/[id]/run", () => {
     expect((await run.POST(request("POST"), params(id))).status).toBe(409);
   });
 
-  it("answers 202 straight away, then the scan saves its leads", async () => {
+  it("answers 202 before the scan runs, then the scan saves its leads", async () => {
     const { id } = await newCampaign();
     const res = await run.POST(request("POST"), params(id));
     expect(res.status).toBe(202);
     expect(await res.json()).toMatchObject({ status: "RUNNING" });
-    await Promise.all(pendingAfter);
+    // The response came first: nothing is saved until the deferred work runs.
+    const meanwhile = await prisma.campaign.findUniqueOrThrow({ where: { id }, include: { businesses: true } });
+    expect(meanwhile).toMatchObject({ status: "RUNNING", businesses: [] });
+    await runPendingAfter();
     const saved = await prisma.campaign.findUniqueOrThrow({ where: { id }, include: { businesses: true } });
     expect(saved.status).toBe("DONE");
     expect(saved.businesses.map((b) => b.name)).toEqual(["Klinika"]);
@@ -134,6 +195,7 @@ describe("GET /api/campaigns/[id]/export", () => {
     const { id } = await newCampaign({ name: "Tirana dentists" });
     await newLead(id, { name: "=HYPERLINK(1)" });
     const res = await exportCsv.GET(request("GET"), params(id));
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/csv");
     expect(res.headers.get("content-disposition")).toBe('attachment; filename="tirana-dentists-leads.csv"');
     expect(res.headers.get("cache-control")).toBe("no-store");
@@ -151,13 +213,15 @@ describe("campaign rescore and bulk drafts", () => {
     const { id } = await newCampaign();
     await newLead(id, { score: 0, signals: { create: [{ key: "no_website", label: "No website found", severity: 40 }] } });
     const res = await rescore.POST(request("POST"), params(id));
+    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ rescored: 1, changed: 1 });
   });
 
   it("bulk drafts refuse a bad limit and a missing campaign", async () => {
     const { id } = await newCampaign();
     expect((await bulkDrafts.POST(request("POST", { limit: 0 }), params(id))).status).toBe(400);
-    expect((await bulkDrafts.POST(request("POST", { limit: 21 }), params(id))).status).toBe(400);
+    expect((await bulkDrafts.POST(request("POST", { limit: MAX_BULK_DRAFTS + 1 }), params(id))).status).toBe(400);
+    expect((await bulkDrafts.POST(request("POST", { limit: MAX_BULK_DRAFTS }), params(id))).status).toBe(200);
     expect((await bulkDrafts.POST(request("POST", {}), params("nope"))).status).toBe(404);
   });
 
@@ -216,8 +280,15 @@ describe("outreach, follow-ups and pipeline", () => {
     expect((await res.json()).map((b: { name: string }) => b.name)).toContain("Due");
   });
 
-  it("pipeline answers with a summary", async () => {
-    const res = await pipeline.GET(request("GET", undefined, "http://test.local/api/pipeline"));
-    expect(await res.json()).toMatchObject({ total: expect.any(Number), reached: expect.any(Array) });
+  it("pipeline counts one campaign when asked, and all of them otherwise", async () => {
+    const { id } = await newCampaign();
+    await newLead(id, { crmStage: "CONTACTED" });
+    await newLead(id);
+    const url = `http://test.local/api/pipeline?campaignId=${id}`;
+    const one = await (await pipeline.GET(request("GET", undefined, url))).json();
+    expect(one).toMatchObject({ total: 2, dead: 0 });
+    expect(one.reached.find((r: { stage: string }) => r.stage === "CONTACTED").count).toBe(1);
+    const all = await (await pipeline.GET(request("GET", undefined, "http://test.local/api/pipeline"))).json();
+    expect(all.total).toBeGreaterThan(2);
   });
 });

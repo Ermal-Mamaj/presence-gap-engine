@@ -152,6 +152,9 @@ function ScoreExplanation({ business }: { business: Business }) {
 
 /** The day to get back to this lead, with a way to clear it, and a flag once it is due. */
 function FollowUp({ day, onChange }: { day: string | null; onChange: (day: string | null) => void }) {
+  // The field keeps what is being typed; only a finished date is saved. The
+  // parent remounts it (key) whenever the saved day changes.
+  const [typed, setTyped] = useState(day ?? "");
   const due = day !== null && day <= localDay();
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
@@ -161,8 +164,17 @@ function FollowUp({ day, onChange }: { day: string | null; onChange: (day: strin
       <input
         id="follow-up"
         type="date"
-        value={day ?? ""}
-        onChange={(e) => onChange(e.target.value || null)}
+        value={typed}
+        onChange={(e) => {
+          // A date input reports each year as it is typed (0002, 0020, 0202,
+          // 2027); save only a cleared field or a plausible year.
+          const value = e.target.value;
+          setTyped(value);
+          // The whole value must be a four-digit year date: mid-typing a field
+          // can briefly hold "20202-10-18".
+          const year = Number(/^(\d{4})-\d{2}-\d{2}$/.exec(value)?.[1]);
+          if (value === "" || (year >= 2000 && year <= 2100)) onChange(value || null);
+        }}
         className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
       />
       {day && (
@@ -255,6 +267,7 @@ export default function LeadDetailPage() {
   const [copied, setCopied] = useState(false);
   /** The channel picked for the next draft; until one is, a channel the lead can be reached on. */
   const [pickedChannel, setPickedChannel] = useState<DraftChannel | null>(null);
+  const [markingSent, setMarkingSent] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Whether the notes box holds edits the server hasn't accepted. A ref, not
@@ -347,14 +360,25 @@ export default function LeadDetailPage() {
 
   /** Records that a draft went out; the server moves the lead to CONTACTED and plans a follow-up. */
   async function markSent(draftId: string) {
-    if (notesDirty.current) await saveNotes();
-    const res = await fetch(`/api/outreach/${draftId}/sent`, { method: "POST" });
-    if (res.ok) {
-      setDraftError(null);
-      load();
-    } else {
-      const data = await res.json().catch(() => null);
-      setDraftError(data?.error ?? "Could not mark the draft as sent");
+    if (markingSent) return;
+    setMarkingSent(true);
+    try {
+      if (notesDirty.current) await saveNotes();
+      // The browser's own date, so the follow-up counts from the user's day.
+      const res = await fetch(`/api/outreach/${draftId}/sent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ today: localDay() }),
+      });
+      if (res.ok) {
+        setDraftError(null);
+        load();
+      } else {
+        const data = await res.json().catch(() => null);
+        setDraftError(data?.error ?? "Could not mark the draft as sent");
+      }
+    } finally {
+      setMarkingSent(false);
     }
   }
 
@@ -510,7 +534,11 @@ export default function LeadDetailPage() {
               );
             })}
           </div>
-          <FollowUp day={business.followUpAt ? followUpDay(business.followUpAt) : null} onChange={setFollowUp} />
+          <FollowUp
+            key={business.followUpAt ?? "none"}
+            day={business.followUpAt ? followUpDay(business.followUpAt) : null}
+            onChange={setFollowUp}
+          />
         </section>
 
         <section className="mt-6">
@@ -587,10 +615,11 @@ export default function LeadDetailPage() {
                 ) : (
                   <button
                     onClick={() => markSent(latestDraft.id)}
+                    disabled={markingSent}
                     title="Records the send. A lead not yet contacted moves to CONTACTED, with a follow-up in 3 days if none is planned."
                     className="rounded-md border border-zinc-300 px-2 py-1 font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
                   >
-                    Mark as sent
+                    {markingSent ? "Marking…" : "Mark as sent"}
                   </button>
                 )}
               </div>

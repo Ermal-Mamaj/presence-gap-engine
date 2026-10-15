@@ -88,3 +88,16 @@ describe("deleteCampaign", () => {
     await expect(deleteCampaign(prisma, "nope")).rejects.toBeInstanceOf(CampaignNotFoundError);
   });
 });
+
+describe("updateCampaign and the scan claim", () => {
+  it("does not touch updatedAt, which tells a crashed scan from a live one", async () => {
+    const { campaign } = await campaignWithLead();
+    await claimCampaignScan(prisma, campaign.id);
+    const before = (await prisma.campaign.findUniqueOrThrow({ where: { id: campaign.id } })).updatedAt;
+    await new Promise((r) => setTimeout(r, 20));
+    await updateCampaign(prisma, campaign.id, { name: "Renamed while stuck" });
+    const after = await prisma.campaign.findUniqueOrThrow({ where: { id: campaign.id } });
+    expect(after.name).toBe("Renamed while stuck");
+    expect(after.updatedAt).toEqual(before);
+  });
+});
