@@ -19,6 +19,7 @@ interface Card {
   phone: string | null;
   email: string | null;
   emailFromSite: boolean;
+  doNotContact: boolean;
   facebook: string | null;
   instagram: string | null;
   followUpAt: string | null;
@@ -31,6 +32,15 @@ interface Card {
     fromTemplate: boolean;
     createdAt: string;
   } | null;
+}
+
+interface MailStatus {
+  ready: boolean;
+  dryRun: boolean;
+  from: string | null;
+  missing: string[];
+  dailyLimit: number;
+  sentLastDay: number;
 }
 
 interface Queue {
@@ -62,8 +72,13 @@ export default function ReviewPage() {
   const [tab, setTab] = useState<Tab>("ready");
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mail, setMail] = useState<MailStatus | null>(null);
 
   const load = useCallback(() => {
+    fetch("/api/mail")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: MailStatus | null) => setMail(data))
+      .catch(() => setMail(null));
     return fetch(`/api/campaigns/${id}/review`)
       .then(async (res) => {
         const data = await res.json().catch(() => null);
@@ -164,7 +179,7 @@ export default function ReviewPage() {
 
             <div className="lg:sticky lg:top-6 lg:self-start">
               {current ? (
-                <CardDetail key={`${current.leadId}:${current.draft?.id ?? "none"}`} card={current} onChanged={load} />
+                <CardDetail key={`${current.leadId}:${current.draft?.id ?? "none"}`} card={current} mail={mail} onChanged={load} />
               ) : (
                 cards.length > 0 && <p className="text-sm text-zinc-500">Pick a card to read its message.</p>
               )}
@@ -212,13 +227,22 @@ function Contacts({ card }: { card: Card }) {
   );
 }
 
-function CardDetail({ card, onChanged }: { card: Card; onChanged: () => Promise<void> | void }) {
+function CardDetail({
+  card,
+  mail,
+  onChanged,
+}: {
+  card: Card;
+  mail: MailStatus | null;
+  onChanged: () => Promise<void> | void;
+}) {
   const draft = card.draft;
   const [subject, setSubject] = useState(draft?.subject ?? "");
   const [body, setBody] = useState(draft?.body ?? "");
   const [channel, setChannel] = useState<DraftChannel>(defaultChannel(card));
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const dirty = draft !== null && (subject !== (draft.subject ?? "") || body !== draft.body);
 
@@ -327,7 +351,28 @@ function CardDetail({ card, onChanged }: { card: Card; onChanged: () => Promise<
                 <button className={BUTTON} onClick={copy}>
                   Copy
                 </button>
-                {draft.channel === "email" && email && (
+                {draft.channel === "email" && email && !card.doNotContact && mail?.ready && (
+                  <button
+                    disabled={busy}
+                    className={PRIMARY}
+                    onClick={() => {
+                      const what = mail.dryRun ? "Build this email as a dry run (nothing is sent)" : `Send this email to ${email} from ${mail.from}`;
+                      if (!window.confirm(`${what}?`)) return;
+                      act(async () => {
+                        if (dirty) await save();
+                        const result = await call(
+                          `/api/outreach/${draft.id}/send`,
+                          { method: "POST", body: JSON.stringify({ today: localDay() }) },
+                          "Could not send the email"
+                        );
+                        setPreview(result.dryRun ? result.text : null);
+                      }, mail.dryRun ? "Dry run: built, not sent. This is the text it would send:" : "Sent.");
+                    }}
+                  >
+                    {mail.dryRun ? "Send email (dry run)" : "Send email"}
+                  </button>
+                )}
+                {draft.channel === "email" && email && !card.doNotContact && (
                   <a className={BUTTON} href={`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`}>
                     Open in email app
                   </a>
@@ -371,7 +416,38 @@ function CardDetail({ card, onChanged }: { card: Card; onChanged: () => Promise<
           )}
         </>
       )}
+      {draft?.channel === "email" && !draft.sentAt && card.doNotContact && (
+        <p className="mt-2 text-sm text-red-700 dark:text-red-400">
+          This address is on the do-not-contact list, so it won&rsquo;t be sent.
+        </p>
+      )}
+      {draft?.channel === "email" && !draft.sentAt && !card.doNotContact && mail && !mail.ready && (
+        <p className="mt-2 text-xs text-zinc-500">
+          Sending from the app isn&rsquo;t set up (needs {mail.missing.join(", ")} in .env); use Open in email app meanwhile.
+        </p>
+      )}
+      {mail?.ready && draft?.channel === "email" && !draft.sentAt && (
+        <p className="mt-1 text-xs text-zinc-400">
+          {mail.sentLastDay} of {mail.dailyLimit} emails sent in the last 24 hours. The opt-out line is added when sending.
+        </p>
+      )}
+      {email && !card.doNotContact && (
+        <button
+          disabled={busy}
+          className="mt-3 text-xs text-red-700 underline dark:text-red-400"
+          onClick={() => {
+            if (!window.confirm(`Never contact ${email} again?`)) return;
+            act(
+              () => call("/api/do-not-contact", { method: "POST", body: JSON.stringify({ value: email, reason: "From the review page" }) }, "Could not add it"),
+              "Added to the do-not-contact list."
+            );
+          }}
+        >
+          Do not contact this address
+        </button>
+      )}
       {note && <p className="mt-2 text-xs text-zinc-500">{note}</p>}
+      {preview && <pre className="mt-1 whitespace-pre-wrap rounded-md bg-zinc-50 p-2 text-xs text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">{preview}</pre>}
       {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
     </section>
   );

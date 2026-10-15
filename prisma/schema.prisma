@@ -156,6 +156,8 @@ model Outreach {
   body       String
   openLine   String
   sentAt     DateTime? // when this draft was actually sent; null = not sent
+  sentVia    String?   // "app_email" when the app sent it; null when marked sent by hand
+  emailMessageId String? // the Message-ID of an email the app sent, to match replies later
   // The template it was filled from; null for an AI draft or a deleted template.
   templateId String?
   template   MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
@@ -196,4 +198,13 @@ model StageChange {
   createdAt  DateTime  @default(now())
 
   @@index([businessId, createdAt])
+}
+
+// Addresses and whole domains that must never receive outreach: an opt-out,
+// a complaint, or a business that asked not to be contacted.
+model DoNotContact {
+  id        String   @id @default(cuid())
+  value     String   @unique // a lower-cased email address, or a domain such as "klinika.al"
+  reason    String?
+  createdAt DateTime @default(now())
 }
