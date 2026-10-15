@@ -3,6 +3,11 @@ import type { BusinessSource, RawBusiness, SearchBox } from "./types";
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 
+// Both services ask clients to identify themselves. Nominatim's usage policy
+// requires it, and overpass-api.de refuses a request without one with HTTP 406
+// before running the query, which failed every scan.
+const USER_AGENT = "presence-gap-engine/0.1 (lead-research tool)";
+
 // Overpass is told to give up after 25s server-side (see buildOverpassQuery);
 // the client waits a little longer so it sees that answer instead of a hang.
 const NOMINATIM_TIMEOUT_MS = 15_000;
@@ -46,10 +51,7 @@ async function geocodeRegion(region: string): Promise<{ lat: number; lon: number
   url.searchParams.set("limit", "1");
 
   const res = await fetch(url.toString(), {
-    headers: {
-      // Nominatim usage policy requires a descriptive User-Agent.
-      "User-Agent": "presence-gap-engine/0.1 (lead-research tool)",
-    },
+    headers: { "User-Agent": USER_AGENT },
     signal: AbortSignal.timeout(NOMINATIM_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`Nominatim error: ${res.status} ${res.statusText}`);
@@ -142,7 +144,7 @@ export const osmSource: BusinessSource = {
     const query = buildOverpassQuery(geo.boundingbox, tags);
     const res = await fetch(OVERPASS_URL, {
       method: "POST",
-      headers: { "Content-Type": "text/plain" },
+      headers: { "Content-Type": "text/plain", "User-Agent": USER_AGENT },
       body: query,
       signal: AbortSignal.timeout(OVERPASS_TIMEOUT_MS),
     });
