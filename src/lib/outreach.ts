@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { DetectedSignal } from "./detect";
+import { createMessageWithOllama, draftProvider, OllamaError } from "./ollama";
 import { DEFAULT_LANGUAGE, DRAFT_LANGUAGES, type DraftChannel, type DraftLanguage } from "./outreachOptions";
 
 export interface OutreachTarget {
@@ -109,7 +110,7 @@ export function buildPrompt(target: OutreachTarget, signals: DetectedSignal[], o
   const rating = typeof target.rating === "number" && target.rating > 0 ? target.rating : null;
   const reviews = typeof target.reviewCount === "number" && target.reviewCount > 0 ? target.reviewCount : null;
 
-  return `You are helping a small web-services freelancer reach out to a local business.
+  return `You are helping a small web-services freelancer reach out to a local business. Write the whole message in ${language}.
 
 Business: ${target.name}
 ${target.address ? `Address: ${target.address}\n` : ""}${target.website ? `Website: ${target.website}\n` : ""}${rating !== null ? `Rating: ${rating}\n` : ""}${reviews !== null ? `Reviews: ${reviews}\n` : ""}
@@ -117,7 +118,7 @@ Observed gaps (publicly visible, true, specific):
 ${signalLines}
 
 ${CHANNEL_RULES[channel]}
-- Open by naming the ONE most striking gap in concrete terms (e.g. "your clinic doesn't come up on Google and has no website" — not vague like "improve your online presence").
+- Open by naming the ONE most striking gap in concrete terms, taken from the list above (e.g. "your clinic's listing has no website", not vague like "improve your online presence").
 - Sell the outcome (customers can find and message them), not "a website".
 - Offer to fix it, not a hard pitch. End with a low-friction ask (a quick reply or call).
 - Do not invent facts not present in the signals above.
@@ -182,6 +183,20 @@ async function createMessageWithClaude(prompt: string): Promise<MessageLike> {
   }
 }
 
+/**
+ * The same request to a local model through Ollama. A server that isn't
+ * running or a model that isn't downloaded is a setup problem, reported like
+ * missing Claude credentials, so bulk drafting stops at the first one.
+ */
+async function createMessageWithLocalModel(prompt: string): Promise<MessageLike> {
+  try {
+    return await createMessageWithOllama(prompt, RESPONSE_SCHEMA, MAX_DRAFT_TOKENS);
+  } catch (err) {
+    if (err instanceof OllamaError && err.kind !== "failed") throw new OutreachError("not_configured", err.message);
+    throw err;
+  }
+}
+
 export async function draftOutreach(
   target: OutreachTarget,
   signals: DetectedSignal[],
@@ -198,7 +213,9 @@ export async function draftOutreach(
 
   let response: MessageLike;
   try {
-    response = await (deps.createMessage ?? createMessageWithClaude)(buildPrompt(target, citable, options));
+    const createMessage =
+      deps.createMessage ?? (draftProvider() === "ollama" ? createMessageWithLocalModel : createMessageWithClaude);
+    response = await createMessage(buildPrompt(target, citable, options));
   } catch (err) {
     if (err instanceof OutreachError) throw err;
     throw new OutreachError("upstream", err instanceof Error ? err.message : "Draft generation failed");

@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { fromStoredSignal } from "./detect";
+import { draftProvider } from "./ollama";
 import { draftOutreach, OutreachError, type OutreachDeps } from "./outreach";
 import { defaultChannel, DEFAULT_LANGUAGE, type DraftChannel, isDraftLanguage } from "./outreachOptions";
 import { mapWithConcurrency } from "./scan";
@@ -37,7 +38,8 @@ export async function draftForLead(
 }
 
 export const MAX_BULK_DRAFTS = 20;
-const BULK_CONCURRENCY = 3;
+// A local model on a CPU does one draft well at a time; the API takes three.
+const bulkConcurrency = () => (draftProvider() === "ollama" ? 1 : 3);
 
 export interface BulkDraftOutcome {
   /** Leads that met the criteria, best first. */
@@ -51,7 +53,7 @@ export interface BulkDraftOutcome {
 /**
  * Drafts the best leads in a campaign that are ready for a first message:
  * a verified gap to mention, no draft yet, and not yet contacted. Highest
- * score first, at most MAX_BULK_DRAFTS, three at a time.
+ * score first, at most MAX_BULK_DRAFTS, three at a time (one with a local model).
  *
  * One lead's failure doesn't stop the rest, except a credentials failure,
  * which every remaining call would repeat.
@@ -76,7 +78,7 @@ export async function draftTopLeads(
   });
 
   const outcome: BulkDraftOutcome = { selected: leads.length, drafted: 0, failed: [] };
-  await mapWithConcurrency(leads, BULK_CONCURRENCY, async (lead) => {
+  await mapWithConcurrency(leads, bulkConcurrency(), async (lead) => {
     if (outcome.stoppedBecause) return;
     try {
       await draftForLead(prisma, lead, { deps: options.deps });
