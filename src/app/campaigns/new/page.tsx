@@ -75,7 +75,7 @@ export default function NewCampaignPage() {
               className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             />
             <p className="mt-1 text-xs text-zinc-500">
-              OSM source works best with common terms: dentist, restaurant, hairdresser, lawyer, gym, cafe, etc.
+              A common term (dentist, restaurant, optician, car wash, driving school…) or, for anything else, an OpenStreetMap tag such as shop=optician.
             </p>
           </div>
           <div>

@@ -37,6 +37,8 @@ Two pluggable sources behind a common interface (`src/lib/sources/types.ts`):
   but keep volumes small and infrequent if you use it. The code is capped at
   40 listings per run by design.
 
+The niche is either a term the OSM adapter knows (about 65, from "dentist" to "driving school", plural accepted) or, for any other business type, OpenStreetMap tags given directly: `shop=optician`, or up to five separated by commas. Tags are validated before they reach the Overpass query.
+
 Adding a new source means implementing `BusinessSource` in
 `src/lib/sources/` and registering it in `src/lib/sources/index.ts` — nothing
 else in the pipeline needs to change.
