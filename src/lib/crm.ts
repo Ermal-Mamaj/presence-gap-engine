@@ -12,7 +12,7 @@ export const CRM_STAGES = [
 export type CrmStageName = (typeof CRM_STAGES)[number];
 
 // The happy path, in order. DEAD sits outside it.
-const PIPELINE: CrmStageName[] = ["NEW", "QUALIFIED", "CONTACTED", "REPLIED", "CONVERTED", "DELIVERED", "RETAINED"];
+export const PIPELINE: CrmStageName[] = ["NEW", "QUALIFIED", "CONTACTED", "REPLIED", "CONVERTED", "DELIVERED", "RETAINED"];
 
 // A dead lead can only be reopened at the start of the pipeline, so reviving
 // one never skips past the qualification a human should redo.

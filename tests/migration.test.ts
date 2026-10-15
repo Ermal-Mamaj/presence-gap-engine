@@ -19,6 +19,41 @@ describe("migrations", () => {
   it("are ordered init first, reliability second", () => {
     expect(migrations[0]).toMatch(/_init$/);
     expect(migrations[1]).toMatch(/_reliability_scans$/);
+    expect(migrations[2]).toMatch(/_contact_channels$/);
+    expect(migrations[3]).toMatch(/_website_check_limit$/);
+    expect(migrations[4]).toMatch(/_draft_language$/);
+  });
+
+  it("date existing website checks from the last scan that saw the lead", () => {
+    const db = new Database(path.join(tempDir, "legacy3.db"));
+    try {
+      for (const name of migrations.slice(0, 3)) db.exec(sql(name));
+      db.exec(`
+        INSERT INTO "Campaign" ("id","name","region","niche","updatedAt") VALUES ('c1','n','r','n',CURRENT_TIMESTAMP);
+        INSERT INTO "Business" ("id","campaignId","name","dedupeKey","website","lastSeenAt","updatedAt")
+          VALUES ('w','c1','With site','k1','klinika.al','2026-09-01 10:00:00',CURRENT_TIMESTAMP);
+        INSERT INTO "Business" ("id","campaignId","name","dedupeKey","website","lastSeenAt","updatedAt")
+          VALUES ('b','c1','Blank site','k2','  ','2026-09-01 10:00:00',CURRENT_TIMESTAMP);
+        INSERT INTO "Business" ("id","campaignId","name","dedupeKey","lastSeenAt","updatedAt")
+          VALUES ('n','c1','No site','k3','2026-09-01 10:00:00',CURRENT_TIMESTAMP);
+        INSERT INTO "ScanRun" ("id","campaignId","found") VALUES ('r1','c1',3);
+      `);
+
+      db.exec(sql(migrations[3]));
+
+      const checkedAt = Object.fromEntries(
+        db.prepare(`SELECT "id","siteCheckedAt" FROM "Business"`).all().map((r) => {
+          const row = r as { id: string; siteCheckedAt: string | null };
+          return [row.id, row.siteCheckedAt];
+        })
+      );
+      // Before this migration every returned website was checked, so the last
+      // sighting is the last check. A lead without a website has none.
+      expect(checkedAt).toEqual({ w: "2026-09-01 10:00:00", b: null, n: null });
+      expect(db.prepare(`SELECT "found","deferred" FROM "ScanRun"`).get()).toEqual({ found: 3, deferred: 0 });
+    } finally {
+      db.close();
+    }
   });
 
   it("upgrade a database that already holds leads without losing or merging any of them", () => {

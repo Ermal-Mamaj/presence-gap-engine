@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { analyzePresence, detectGaps, detectStaleness } from "@/lib/detect";
+import { analyzePresence, deferWebsiteCheck, detectGaps, detectStaleness, websiteNeedsFetch } from "@/lib/detect";
 import { SafeFetchError, type FetchedPage } from "@/lib/safeFetch";
 
 const GOOD_HTML =
-  '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>© 2026 Example</body></html>';
+  '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Family dentist in Tirana"></head><body>© 2026 Example</body></html>';
 
 const page = (overrides: Partial<FetchedPage> = {}): FetchedPage => ({
   status: 200,
@@ -176,7 +176,7 @@ describe("analyzePresence: page quality signals", () => {
       { website: "http://example.com" },
       deps(async () => page({ finalUrl: "http://example.com/", body: "<html><head></head><body>© 2026</body></html>" }))
     );
-    expect(keys(result.signals).sort()).toEqual(["no_mobile_viewport", "not_https"]);
+    expect(keys(result.signals).sort()).toEqual(["no_meta_description", "no_mobile_viewport", "not_https"]);
     expect(result.signals.every((s) => s.certainty === "VERIFIED")).toBe(true);
     expect(result.websiteStatus).toBe("NEEDS_WORK");
   });
@@ -212,6 +212,45 @@ describe("analyzePresence: page quality signals", () => {
       expect.objectContaining({ key: "stale_site", detail: "2018", certainty: "VERIFIED" }),
     ]);
     expect(result.websiteStatus).toBe("NEEDS_WORK");
+  });
+});
+
+describe("analyzePresence: contact links on the business's own page", () => {
+  const withLinks = GOOD_HTML.replace(
+    "<body>",
+    '<body><a href="mailto:info@example.com">Mail</a><a href="tel:+355691234567">Call</a>'
+  );
+
+  it("returns the page's mailto: and tel: links", async () => {
+    const result = await analyzePresence({ website: "https://example.com" }, deps(async () => page({ body: withLinks })));
+    expect(result.contacts).toEqual({ email: "info@example.com", phone: "+355691234567" });
+  });
+
+  it("does not read contacts from an error page, which belongs to the host", async () => {
+    const result = await analyzePresence(
+      { website: "https://example.com" },
+      deps(async () => page({ status: 503, body: withLinks }))
+    );
+    expect(result.contacts).toBeUndefined();
+  });
+
+  it("has no contacts when no page was read", async () => {
+    expect((await analyzePresence({ website: null }, deps(vi.fn()))).contacts).toBeUndefined();
+  });
+});
+
+describe("deferWebsiteCheck", () => {
+  it("records the website as unchecked: inconclusive, and worth nothing to the score", () => {
+    const result = deferWebsiteCheck({ website: "example.com" }, "over the limit");
+    expect(result.websiteStatus).toBe("NEEDS_CHECK");
+    expect(result.signals).toEqual([
+      expect.objectContaining({ key: "site_check_deferred", severity: 0, certainty: "UNCERTAIN", detail: "over the limit" }),
+    ]);
+  });
+
+  it("still applies the signals that come from the listing alone", () => {
+    const result = deferWebsiteCheck({ website: "example.com", reviewCount: 0, rating: 0 }, "x");
+    expect(keys(result.signals)).toEqual(["site_check_deferred", "thin_listing"]);
   });
 });
 
@@ -279,5 +318,94 @@ describe("detectGaps", () => {
   it("returns just the signals", async () => {
     const signals = await detectGaps({ website: null }, deps(vi.fn()));
     expect(keys(signals)).toEqual(["no_website"]);
+  });
+});
+
+describe("analyzePresence: a website that is not a site of the business's own", () => {
+  it.each([
+    ["https://www.facebook.com/KlinikaArberi", "social_only"],
+    ["instagram.com/klinika.arberi", "social_only"],
+    ["https://linktr.ee/klinika", "social_only"],
+    ["https://wa.me/355691234567", "social_only"],
+    ["https://klinika-arberi.business.site", "retired_site"],
+  ])("treats %s as no website, without fetching it", async (website, key) => {
+    const fetchPage = vi.fn();
+    const result = await analyzePresence({ website }, deps(fetchPage));
+    expect(fetchPage).not.toHaveBeenCalled();
+    expect(result.signals).toEqual([expect.objectContaining({ key, certainty: "VERIFIED" })]);
+    expect(result.websiteStatus).toBe("NONE_FOUND");
+  });
+
+  it("does not mistake a lookalike host for a social site", async () => {
+    const result = await analyzePresence({ website: "https://notfacebook.com" }, deps(async () => page()));
+    expect(keys(result.signals)).not.toContain("social_only");
+  });
+});
+
+describe("analyzePresence: more page checks", () => {
+  const site = { website: "https://example.com" };
+
+  it("recognises a parked or for-sale domain, and judges nothing else on it", async () => {
+    const body = "<html><head></head><body>This domain is for sale! Buy this domain today.</body></html>";
+    const result = await analyzePresence(site, deps(async () => page({ body, finalUrl: "http://example.com/" })));
+    expect(keys(result.signals)).toEqual(["site_parked"]);
+    expect(result.websiteStatus).toBe("NEEDS_WORK");
+  });
+
+  it("accepts a meta description whatever the attribute order", async () => {
+    const body = GOOD_HTML.replace('<meta name="description" content="Family dentist in Tirana">', '<meta content="Family dentist" name="description">');
+    const result = await analyzePresence(site, deps(async () => page({ body })));
+    expect(keys(result.signals)).not.toContain("no_meta_description");
+  });
+
+  it("flags an empty meta description as missing", async () => {
+    const body = GOOD_HTML.replace('content="Family dentist in Tirana"', 'content=" "');
+    const result = await analyzePresence(site, deps(async () => page({ body })));
+    expect(keys(result.signals)).toContain("no_meta_description");
+  });
+
+  it("flags a missing tap-to-call link only for a business with a phone", async () => {
+    const withPhone = await analyzePresence({ ...site, phone: "+355 69 123 4567" }, deps(async () => page()));
+    expect(keys(withPhone.signals)).toEqual(["no_tap_to_call"]);
+    const withoutPhone = await analyzePresence(site, deps(async () => page()));
+    expect(withoutPhone.signals).toEqual([]);
+  });
+
+  it("does not flag tap-to-call when the page has a tel: link, or was cut off", async () => {
+    const linked = GOOD_HTML.replace("<body>", '<body><a href="tel:+355691234567">Call</a>');
+    const phone = "+355 69 123 4567";
+    expect((await analyzePresence({ ...site, phone }, deps(async () => page({ body: linked })))).signals).toEqual([]);
+    const cut = await analyzePresence({ ...site, phone }, deps(async () => page({ truncated: true })));
+    expect(keys(cut.signals)).not.toContain("no_tap_to_call");
+  });
+});
+
+describe("analyzePresence: pages that are not the business's own", () => {
+  it("reads no contacts from a parked page, whose mailto: belongs to the domain seller", async () => {
+    const body = '<html><body>This domain is for sale. <a href="mailto:sales@broker.example">Contact</a></body></html>';
+    const result = await analyzePresence({ website: "https://example.com" }, deps(async () => page({ body })));
+    expect(keys(result.signals)).toEqual(["site_parked"]);
+    expect(result.contacts).toBeUndefined();
+  });
+
+  it("treats a site that redirects to a social page as social-only, and reads nothing from it", async () => {
+    const body = '<html><head></head><body><a href="mailto:noreply@facebook.example">x</a></body></html>';
+    const result = await analyzePresence(
+      { website: "mybiz.al", phone: "+355 69 1" },
+      deps(async () => page({ body, finalUrl: "https://www.facebook.com/mybiz" }))
+    );
+    expect(keys(result.signals)).toEqual(["social_only"]);
+    expect(result.websiteStatus).toBe("NONE_FOUND");
+    expect(result.contacts).toBeUndefined();
+  });
+});
+
+describe("websiteNeedsFetch", () => {
+  it("is false for nothing, a social page or a retired site, and true for a real site", () => {
+    expect(websiteNeedsFetch(null)).toBe(false);
+    expect(websiteNeedsFetch("  ")).toBe(false);
+    expect(websiteNeedsFetch("https://www.facebook.com/x")).toBe(false);
+    expect(websiteNeedsFetch("klinika.business.site")).toBe(false);
+    expect(websiteNeedsFetch("klinika.al")).toBe(true);
   });
 });

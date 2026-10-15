@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { DetectedSignal } from "./detect";
+import { DEFAULT_LANGUAGE, DRAFT_LANGUAGES, type DraftChannel, type DraftLanguage } from "./outreachOptions";
 
 export interface OutreachTarget {
   name: string;
@@ -37,11 +38,13 @@ const RESPONSE_SCHEMA = {
     },
     subject: {
       type: "string",
-      description: "A short, non-spammy email subject line.",
+      description:
+        "For an email, a short, non-spammy subject line. For a call script or a message, a short title for the sender's own records.",
     },
     body: {
       type: "string",
-      description: "The full outreach email body, including the open line, the offer, and a soft call to action. No sign-off placeholder needed.",
+      description:
+        "The full text to send or say, including the open line, the offer, and a soft call to action. No sign-off placeholder needed.",
     },
   },
   required: ["open_line", "subject", "body"],
@@ -79,24 +82,46 @@ export function citableSignals(signals: DetectedSignal[]): DetectedSignal[] {
   return signals.filter((s) => s.certainty === "VERIFIED" && s.severity > 0);
 }
 
-export function buildPrompt(target: OutreachTarget, signals: DetectedSignal[]): string {
+export interface DraftOptions {
+  language?: DraftLanguage;
+  channel?: DraftChannel;
+}
+
+// What changes with the channel. The rules every channel shares stay in
+// buildPrompt, so the three can't drift apart on what matters: one specific
+// gap, no invented facts, a soft ask.
+const CHANNEL_RULES: Record<DraftChannel, string> = {
+  email: `Write a short, specific, non-templated outreach email.
+- Keep it short (under 120 words), plain, no corporate tone, no emojis, no exclamation points.`,
+  phone: `Write a script for a short phone call, to be read aloud by the freelancer.
+- Spoken language: short sentences, nothing that only works on paper. Under 100 words.
+- Start by saying who is calling and why in one sentence, then ask whether it is a good moment.
+- End with a question that is easy to answer on the spot, such as whether they would like to see an example.`,
+  message: `Write a WhatsApp or Facebook message to the business.
+- Two to four short sentences, conversational, no greeting formula, no emojis, no exclamation points.
+- It has to make sense to someone who reads only its first line in a notification.`,
+};
+
+export function buildPrompt(target: OutreachTarget, signals: DetectedSignal[], options: DraftOptions = {}): string {
+  const language = DRAFT_LANGUAGES[options.language ?? DEFAULT_LANGUAGE];
+  const channel = options.channel ?? "email";
   const signalLines = signals.map((s) => `- ${s.label}${s.detail ? ` (${s.detail})` : ""}`).join("\n");
   const rating = typeof target.rating === "number" && target.rating > 0 ? target.rating : null;
   const reviews = typeof target.reviewCount === "number" && target.reviewCount > 0 ? target.reviewCount : null;
 
-  return `You are helping a small web-services freelancer write a cold outreach email to a local business.
+  return `You are helping a small web-services freelancer reach out to a local business.
 
 Business: ${target.name}
 ${target.address ? `Address: ${target.address}\n` : ""}${target.website ? `Website: ${target.website}\n` : ""}${rating !== null ? `Rating: ${rating}\n` : ""}${reviews !== null ? `Reviews: ${reviews}\n` : ""}
 Observed gaps (publicly visible, true, specific):
 ${signalLines}
 
-Write a short, specific, non-templated outreach email. Rules:
+${CHANNEL_RULES[channel]}
 - Open by naming the ONE most striking gap in concrete terms (e.g. "your clinic doesn't come up on Google and has no website" — not vague like "improve your online presence").
 - Sell the outcome (customers can find and message them), not "a website".
-- Keep it short (under 120 words), plain, no corporate tone, no emojis, no exclamation points.
 - Offer to fix it, not a hard pitch. End with a low-friction ask (a quick reply or call).
-- Do not invent facts not present in the signals above.`;
+- Do not invent facts not present in the signals above.
+- Write everything in ${language}. The observations are listed in English; state them naturally in ${language}, without adding to them.`;
 }
 
 interface MessageLike {
@@ -160,7 +185,8 @@ async function createMessageWithClaude(prompt: string): Promise<MessageLike> {
 export async function draftOutreach(
   target: OutreachTarget,
   signals: DetectedSignal[],
-  deps: OutreachDeps = {}
+  deps: OutreachDeps = {},
+  options: DraftOptions = {}
 ): Promise<OutreachDraft> {
   const citable = citableSignals(signals);
   if (citable.length === 0) {
@@ -172,7 +198,7 @@ export async function draftOutreach(
 
   let response: MessageLike;
   try {
-    response = await (deps.createMessage ?? createMessageWithClaude)(buildPrompt(target, citable));
+    response = await (deps.createMessage ?? createMessageWithClaude)(buildPrompt(target, citable, options));
   } catch (err) {
     if (err instanceof OutreachError) throw err;
     throw new OutreachError("upstream", err instanceof Error ? err.message : "Draft generation failed");

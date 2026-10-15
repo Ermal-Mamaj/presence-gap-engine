@@ -119,6 +119,147 @@ describe("a successful scan", () => {
   });
 });
 
+describe("the website-check limit", () => {
+  const sites = (...ns: number[]) => ns.map((n) => biz(n, { website: `site${n}.al` }));
+
+  // Records which websites were fetched; a lead without one costs no request.
+  function recordingAnalyze(answer: (b: DetectableBusiness) => Promise<PresenceAnalysis> = fakeAnalyze) {
+    const checked: string[] = [];
+    const analyze = async (b: DetectableBusiness) => {
+      if (b.website) checked.push(b.website);
+      return answer(b);
+    };
+    return { analyze, checked };
+  }
+
+  let clock: number;
+  const at = (ms: number) => {
+    clock = ms;
+    return () => new Date(clock);
+  };
+
+  it("saves every lead, and caps only how many websites are fetched", async () => {
+    const { analyze, checked } = recordingAnalyze();
+    const outcome = await scan(campaignId, returning([biz(1), biz(2), biz(3), ...sites(4, 5, 6)]), {
+      analyze,
+      maxWebsiteChecks: 2,
+    });
+
+    expect(outcome).toMatchObject({ found: 6, created: 6, deferred: 1 });
+    expect(checked.sort()).toEqual(["site4.al", "site5.al"]);
+
+    const saved = await leads(campaignId);
+    expect(saved).toHaveLength(6);
+    const six = saved.find((b) => b.name === "Business 6")!;
+    expect(six).toMatchObject({ websiteStatus: "NEEDS_CHECK", score: 0, siteCheckedAt: null });
+    expect(six.signals.map((s) => [s.key, s.certainty])).toEqual([["site_check_deferred", "UNCERTAIN"]]);
+    expect((await prisma.scanRun.findFirstOrThrow({ where: { campaignId } })).deferred).toBe(1);
+  });
+
+  it("checks never-checked websites first, then the least recently checked", async () => {
+    const run = async (now: () => Date) => {
+      const { analyze, checked } = recordingAnalyze();
+      await scan(campaignId, returning(sites(1, 2, 3)), { analyze, maxWebsiteChecks: 2, now });
+      return checked.sort();
+    };
+    expect(await run(at(1_000))).toEqual(["site1.al", "site2.al"]);
+    // site3 has never been checked; 1 and 2 tie, so the source's order decides.
+    expect(await run(at(2_000))).toEqual(["site1.al", "site3.al"]);
+    // site2 is now the stalest.
+    expect(await run(at(3_000))).toEqual(["site1.al", "site2.al"]);
+  });
+
+  it("keeps a website's earlier assessment when its check is deferred", async () => {
+    const viewportGap = recordingAnalyze(async () => ({
+      signals: [{ key: "no_mobile_viewport", label: "No viewport", severity: 15, certainty: "VERIFIED" }],
+      websiteStatus: "NEEDS_WORK",
+    }));
+    await scan(campaignId, returning(sites(1)), { analyze: viewportGap.analyze, now: at(1_000) });
+
+    const { analyze, checked } = recordingAnalyze();
+    const outcome = await scan(campaignId, returning(sites(1)), { analyze, maxWebsiteChecks: 0, now: at(2_000) });
+
+    expect(checked).toEqual([]);
+    expect(outcome.deferred).toBe(1);
+    const [one] = await leads(campaignId);
+    expect(one).toMatchObject({ websiteStatus: "NEEDS_WORK", score: 15, siteCheckedAt: new Date(1_000) });
+    expect(one.signals.map((s) => s.key)).toEqual(["no_mobile_viewport"]);
+    // Still refreshed as a listing.
+    expect(one.lastSeenAt).toEqual(new Date(2_000));
+  });
+
+  it("treats a changed website as never checked, so the old verdict is not carried over", async () => {
+    await scan(campaignId, returning(sites(1)), { now: at(1_000) });
+    await scan(campaignId, returning([biz(1, { website: "moved.al" })]), { maxWebsiteChecks: 0, now: at(2_000) });
+
+    const [one] = await leads(campaignId);
+    // Nothing was fetched for moved.al, so it carries no check time, and the
+    // next scan takes it first.
+    expect(one).toMatchObject({ website: "moved.al", websiteStatus: "NEEDS_CHECK", siteCheckedAt: null });
+    expect(one.signals.map((s) => s.key)).toEqual(["site_check_deferred"]);
+  });
+
+  it("records when a website was checked, and leaves it empty for a lead without one", async () => {
+    await scan(campaignId, returning([biz(1), ...sites(2)]), { now: at(5_000) });
+    const [one, two] = await leads(campaignId);
+    expect(one.siteCheckedAt).toBeNull();
+    expect(two.siteCheckedAt).toEqual(new Date(5_000));
+  });
+});
+
+describe("contact details", () => {
+  // What a business's own site would publish, keyed by its website.
+  const siteSays = (contacts: Record<string, { email?: string; phone?: string }>) =>
+    async (business: DetectableBusiness): Promise<PresenceAnalysis> => ({
+      ...(await fakeAnalyze(business)),
+      ...(business.website && contacts[business.website] ? { contacts: contacts[business.website] } : {}),
+    });
+
+  it("saves every contact detail the listing carries", async () => {
+    await scan(
+      campaignId,
+      returning([
+        biz(1, {
+          email: "info@one.al",
+          facebook: "https://www.facebook.com/One",
+          instagram: "https://www.instagram.com/one",
+        }),
+      ])
+    );
+    expect((await leads(campaignId))[0]).toMatchObject({
+      email: "info@one.al",
+      facebook: "https://www.facebook.com/One",
+      instagram: "https://www.instagram.com/one",
+      score: 48, // 40 * (1 + 0.1 email + 0.1 social); the two profiles are one channel
+    });
+  });
+
+  it("fills what the listing left out from the business's own site, but never overrides the listing", async () => {
+    const analyze = siteSays({
+      "one.al": { email: "site@one.al", phone: "+355 1111 111" },
+      "two.al": { email: "site@two.al" },
+    });
+    await scan(
+      campaignId,
+      returning([biz(1, { website: "one.al" }), biz(2, { website: "two.al", email: "listing@two.al" })]),
+      { analyze }
+    );
+    const [one, two] = await leads(campaignId);
+    expect(one).toMatchObject({ email: "site@one.al", phone: "+355 1111 111" });
+    expect(two.email).toBe("listing@two.al");
+  });
+
+  it("prefers what the site says now over what an earlier scan remembered, and keeps the memory otherwise", async () => {
+    await scan(campaignId, returning([biz(1, { website: "one.al", email: "old@one.al", phone: "+355 2222 222" })]));
+
+    // The listing has since lost both; the site now publishes a new email only.
+    await scan(campaignId, returning([biz(1, { website: "one.al" })]), {
+      analyze: siteSays({ "one.al": { email: "new@one.al" } }),
+    });
+    expect((await leads(campaignId))[0]).toMatchObject({ email: "new@one.al", phone: "+355 2222 222" });
+  });
+});
+
 describe("empty and partial discovery", () => {
   it("treats an empty result as a successful scan that found nothing", async () => {
     const outcome = await scan(campaignId, returning([]));
@@ -567,5 +708,35 @@ describe("claiming a scan separately from running it", () => {
     // FAILED is not RUNNING, so the next claim succeeds without waiting out
     // the staleness window.
     await expect(scan(campaignId, returning([biz(1)]))).resolves.toMatchObject({ created: 1 });
+  });
+});
+
+describe("website checks that need no request", () => {
+  it("settles social pages without using up the website-check limit", async () => {
+    // Real detection: a Facebook page is decided from the URL, never fetched.
+    const fetched: string[] = [];
+    const analyze = async (b: DetectableBusiness) => {
+      const { analyzePresence } = await import("@/lib/detect");
+      return analyzePresence(b, {
+        fetchPage: async (url) => {
+          fetched.push(url.hostname);
+          return { status: 200, finalUrl: url.toString(), contentType: "text/html", isHtml: true, body: "<html><head><meta name=viewport><meta name=description content=x></head></html>", truncated: false, redirects: 0 };
+        },
+      });
+    };
+    const outcome = await scan(
+      campaignId,
+      returning([
+        biz(1, { website: "https://www.facebook.com/one" }),
+        biz(2, { website: "https://www.facebook.com/two" }),
+        biz(3, { website: "three.al" }),
+      ]),
+      { analyze, maxWebsiteChecks: 1 }
+    );
+    expect(outcome.deferred).toBe(0);
+    expect(fetched).toEqual(["three.al"]);
+    const saved = await leads(campaignId);
+    expect(saved.filter((b) => b.websiteStatus === "NONE_FOUND").map((b) => b.name)).toEqual(["Business 1", "Business 2"]);
+    expect(saved.every((b) => b.siteCheckedAt !== null)).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Certainty, DetectedSignal } from "@/lib/detect";
-import { computeScore, explainScore, MAX_SCORE } from "@/lib/score";
+import { computeScore, explainScore, gapContributions, MAX_SCORE } from "@/lib/score";
 
 const sig = (key: string, severity: number, certainty: Certainty = "VERIFIED"): DetectedSignal => ({
   key,
@@ -35,7 +35,8 @@ describe("computeScore: baseline behaviour", () => {
     expect(breakdown.gapPoints).toBe(30);
     expect(breakdown.reviewCredit).toBeCloseTo(0.5431, 3);
     expect(breakdown.ratingCredit).toBeCloseTo(0.264, 3);
-    expect(breakdown.phoneCredit).toBe(0.1);
+    expect(breakdown.contactCredit).toBe(0.1);
+    expect(breakdown.channels).toEqual(["phone"]);
     expect(breakdown.ghostPenaltyApplied).toBe(false);
     expect(breakdown.score).toBeCloseTo(57.21, 2);
   });
@@ -44,6 +45,50 @@ describe("computeScore: baseline behaviour", () => {
     const viable = computeScore(NO_WEBSITE, { rating: 4.5, reviewCount: 80, phone: "1" });
     const unproven = computeScore(NO_WEBSITE, { reviewCount: 0, rating: 0 });
     expect(viable).toBeGreaterThan(unproven);
+  });
+});
+
+describe("gapContributions", () => {
+  it("gives each counting signal its share, uncertain ones at half, and adds up to gapPoints", () => {
+    const signals = [sig("no_mobile_viewport", 15), sig("site_unreachable", 35, "UNCERTAIN"), sig("site_not_checked", 0)];
+    const parts = gapContributions(signals);
+    expect(parts.map((p) => [p.signal.key, p.points])).toEqual([
+      ["no_mobile_viewport", 15],
+      ["site_unreachable", 17.5],
+    ]);
+    expect(parts.reduce((s, p) => s + p.points, 0)).toBe(explainScore(signals, {}).gapPoints);
+  });
+});
+
+describe("computeScore: ways to reach the business", () => {
+  const FB = "https://www.facebook.com/a";
+  const IG = "https://www.instagram.com/a";
+
+  it("credits each distinct channel", () => {
+    expect(computeScore(NO_WEBSITE, {})).toBe(40);
+    expect(computeScore(NO_WEBSITE, { phone: "1" })).toBe(44);
+    expect(computeScore(NO_WEBSITE, { phone: "1", email: "a@b.al" })).toBe(48);
+    expect(computeScore(NO_WEBSITE, { phone: "1", email: "a@b.al", facebook: FB })).toBe(52);
+  });
+
+  it("counts Facebook and Instagram as one channel, not two", () => {
+    const breakdown = explainScore(NO_WEBSITE, { facebook: FB, instagram: IG });
+    expect(breakdown.channels).toEqual(["social"]);
+    expect(breakdown.score).toBe(44);
+  });
+
+  it("separates the OSM leads that used to tie", () => {
+    // OpenStreetMap reports no reviews or ratings, so with the same gap a phone
+    // was once the only difference: every lead scored 40 or 44.
+    const unreachable = computeScore(NO_WEBSITE, {});
+    const byEmail = computeScore(NO_WEBSITE, { email: "a@b.al" });
+    const everyWay = computeScore(NO_WEBSITE, { phone: "1", email: "a@b.al", facebook: FB });
+    expect(unreachable).toBeLessThan(byEmail);
+    expect(byEmail).toBeLessThan(everyWay);
+  });
+
+  it("does not count blank contact values", () => {
+    expect(computeScore(NO_WEBSITE, { email: " ", facebook: "" })).toBe(40);
   });
 });
 
@@ -70,6 +115,13 @@ describe("computeScore: zero versus unknown", () => {
     const breakdown = explainScore(NO_WEBSITE, { reviewCount: 0, rating: 0, phone: "1" });
     expect(breakdown.ghostPenaltyApplied).toBe(false);
     expect(breakdown.score).toBe(44);
+  });
+
+  it("does not penalise an empty listing that can still be reached by email or social", () => {
+    expect(explainScore(NO_WEBSITE, { reviewCount: 0, email: "a@b.al" }).ghostPenaltyApplied).toBe(false);
+    expect(
+      explainScore(NO_WEBSITE, { reviewCount: 0, instagram: "https://www.instagram.com/a" }).ghostPenaltyApplied
+    ).toBe(false);
   });
 
   it("does not penalise when either reviews or rating is positive", () => {

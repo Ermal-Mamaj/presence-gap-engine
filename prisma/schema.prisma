@@ -60,6 +60,7 @@ model Campaign {
   region      String
   niche       String
   source      SourceType     @default(OSM)
+  language    String         @default("en") // drafts are written in this; see src/lib/outreachOptions.ts
   status      CampaignStatus @default(DRAFT)
   errorMessage String?
   createdAt   DateTime       @default(now())
@@ -80,6 +81,7 @@ model ScanRun {
   created      Int        @default(0) // new leads added by this scan
   updated      Int        @default(0) // existing leads refreshed by this scan
   skipped      Int        @default(0) // invalid or duplicate records ignored
+  deferred     Int        @default(0) // websites over the per-scan check limit, left for the next scan
 
   startedAt    DateTime   @default(now())
   finishedAt   DateTime?
@@ -95,6 +97,9 @@ model Business {
   name          String
   address       String?
   phone         String?
+  email         String?  // from the listing, else the first mailto: link on the business's own site
+  facebook      String?  // profile URL
+  instagram     String?  // profile URL
   website       String?
   latitude      Float?
   longitude     Float?
@@ -103,11 +108,13 @@ model Business {
   sourceRef     String?  // id/url from the originating source, for provenance
   dedupeKey     String   // stable identity within a campaign, see src/lib/dedupe.ts
   websiteStatus WebsiteStatus @default(NEEDS_CHECK)
+  siteCheckedAt DateTime? // when a scan last fetched the current website; null = not yet
   lastSeenAt    DateTime @default(now()) // last scan that returned this business
 
   score         Float    @default(0)
   crmStage      CrmStage @default(NEW)
   notes         String?
+  followUpAt    DateTime? // the day to get back to this lead; null = nothing scheduled
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -119,6 +126,7 @@ model Business {
   @@unique([campaignId, dedupeKey])
   @@index([campaignId])
   @@index([campaignId, score])
+  @@index([followUpAt])
 }
 
 model GapSignal {
@@ -146,6 +154,7 @@ model Outreach {
   subject    String?
   body       String
   openLine   String
+  sentAt     DateTime? // when this draft was actually sent; null = not sent
 
   createdAt  DateTime @default(now())
 

@@ -81,6 +81,18 @@ describe("sanitizeRawBusiness", () => {
     expect(result).toEqual({ name: "A" });
   });
 
+  it("normalizes contact details and drops unusable ones", () => {
+    expect(
+      sanitizeRawBusiness({ name: "A", email: " info@a.al; b@b.al ", facebook: "PageA", instagram: "@a.dent" })
+    ).toMatchObject({
+      email: "info@a.al",
+      facebook: "https://www.facebook.com/PageA",
+      instagram: "https://www.instagram.com/a.dent",
+    });
+    const bad = sanitizeRawBusiness({ name: "A", email: "nope", facebook: "https://a.al", instagram: 42 });
+    expect(bad).toEqual({ name: "A" });
+  });
+
   it("drops an absurdly long website instead of storing it", () => {
     expect(sanitizeRawBusiness({ name: "A", website: "http://x.com/" + "a".repeat(5000) })!.website).toBeUndefined();
   });
@@ -110,5 +122,24 @@ describe("safeHttpUrl", () => {
   it("assumes https for a bare domain", () => {
     expect(safeHttpUrl("example.com")).toBe("https://example.com/");
     expect(safeHttpUrl("www.example.com/menu")).toBe("https://www.example.com/menu");
+  });
+});
+
+describe("sanitizeRawBusiness: a social page given as the website", () => {
+  it("keeps the website and also records the profile", () => {
+    expect(sanitizeRawBusiness({ name: "A", website: "https://www.facebook.com/KlinikaA/" })).toMatchObject({
+      website: "https://www.facebook.com/KlinikaA/",
+      facebook: "https://www.facebook.com/KlinikaA",
+    });
+    expect(sanitizeRawBusiness({ name: "A", website: "instagram.com/klinika.a" })!.instagram).toBe(
+      "https://www.instagram.com/klinika.a"
+    );
+  });
+
+  it("does not replace a profile the listing gave, or invent one from a normal website", () => {
+    expect(
+      sanitizeRawBusiness({ name: "A", website: "https://www.facebook.com/Other", facebook: "KlinikaA" })!.facebook
+    ).toBe("https://www.facebook.com/KlinikaA");
+    expect(sanitizeRawBusiness({ name: "A", website: "klinika.al" })).toEqual({ name: "A", website: "klinika.al" });
   });
 });

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { draftForLead } from "@/lib/drafting";
+import { OutreachError } from "@/lib/outreach";
+import { DRAFT_CHANNELS, isDraftChannel } from "@/lib/outreachOptions";
 import { prisma } from "@/lib/prisma";
-import { draftOutreach, OutreachError } from "@/lib/outreach";
 
 const STATUS_BY_KIND = {
   no_verified_gaps: 422,
@@ -9,46 +11,31 @@ const STATUS_BY_KIND = {
   upstream: 502,
 } as const;
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+/**
+ * Drafts outreach for one lead. The body may name a channel ("email",
+ * "phone", "message"); without one, the draft is for a channel the lead can
+ * actually be reached on. The language is the campaign's.
+ */
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const business = await prisma.business.findUnique({ where: { id }, include: { signals: true } });
+  // An empty body is fine: the channel is optional.
+  const body: unknown = await req.json().catch(() => ({}));
+  const requested = body && typeof body === "object" ? (body as { channel?: unknown }).channel : undefined;
+  if (requested !== undefined && !isDraftChannel(requested)) {
+    return NextResponse.json({ error: `channel must be one of ${DRAFT_CHANNELS.join(", ")}` }, { status: 400 });
+  }
+
+  const business = await prisma.business.findUnique({ where: { id }, include: { signals: true, campaign: true } });
   if (!business) {
     return NextResponse.json({ error: "Business not found" }, { status: 404 });
   }
 
-  let draft;
   try {
-    draft = await draftOutreach(
-      {
-        name: business.name,
-        address: business.address,
-        website: business.website,
-        rating: business.rating,
-        reviewCount: business.reviewCount,
-      },
-      business.signals.map((s) => ({
-        key: s.key,
-        label: s.label,
-        severity: s.severity,
-        certainty: s.certainty === "UNCERTAIN" ? "UNCERTAIN" : "VERIFIED",
-        detail: s.detail ?? undefined,
-      }))
-    );
+    return NextResponse.json(await draftForLead(prisma, business, { channel: requested }), { status: 201 });
   } catch (err) {
     if (err instanceof OutreachError) {
       return NextResponse.json({ error: err.message }, { status: STATUS_BY_KIND[err.kind] });
     }
     return NextResponse.json({ error: "Failed to draft outreach" }, { status: 500 });
   }
-
-  const outreach = await prisma.outreach.create({
-    data: {
-      businessId: business.id,
-      subject: draft.subject,
-      openLine: draft.openLine,
-      body: draft.body,
-    },
-  });
-
-  return NextResponse.json(outreach, { status: 201 });
 }

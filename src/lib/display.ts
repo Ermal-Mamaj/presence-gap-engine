@@ -19,7 +19,8 @@ export const WEBSITE_STATUS_LABEL: Record<WebsiteStatus, string> = {
 };
 
 export const WEBSITE_STATUS_HINT: Record<WebsiteStatus, string> = {
-  NONE_FOUND: "The listing has no website. The business may still have one — worth checking by hand.",
+  NONE_FOUND:
+    "The listing has no website of its own: none, only a social media page, or a retired one. The business may still have one — worth checking by hand.",
   NEEDS_WORK: "Verified problems were found on the site.",
   NEEDS_CHECK: "A check failed, so nothing is proven either way. Worth a manual look.",
   GOOD: "No problems were detected on the site.",
@@ -50,6 +51,21 @@ export function formatTimestamp(iso: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/**
+ * Today as a calendar day in the viewer's own timezone, "2026-10-17", to
+ * compare with follow-up days (see followUpDay in src/lib/leads.ts).
+ */
+export function localDay(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** A follow-up day for display, e.g. "Oct 17", without letting a timezone move it. */
+export function formatDay(day: string): string {
+  const d = new Date(`${day}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 /** Whole seconds, or "—" when a run never finished. */

@@ -1,3 +1,4 @@
+import { extractSiteContacts, type SiteContacts } from "./contacts";
 import { parseWebsiteUrl, safeFetchPage, SafeFetchError, type FetchedPage } from "./safeFetch";
 
 /**
@@ -23,11 +24,15 @@ export interface DetectableBusiness {
   website?: string | null;
   rating?: number | null;
   reviewCount?: number | null;
+  /** Only used to judge whether the site lets visitors tap to call it. */
+  phone?: string | null;
 }
 
 export interface PresenceAnalysis {
   signals: DetectedSignal[];
   websiteStatus: WebsiteStatus;
+  /** Contact links found on the business's own page, when one was read. */
+  contacts?: SiteContacts;
 }
 
 export interface DetectDeps {
@@ -43,11 +48,72 @@ const WEBSITE_KEYS = new Set([
   "tls_error",
   "site_error",
   "site_not_checked",
+  "site_check_deferred",
   "site_unassessed",
   "not_https",
   "no_mobile_viewport",
   "stale_site",
+  "site_parked",
+  "no_meta_description",
+  "no_tap_to_call",
 ]);
+
+// Listings whose "website" is not a site of their own. Checked from the URL
+// alone: nothing is fetched, and the lead counts as having no website.
+const SOCIAL_HOSTS = ["facebook.com", "fb.com", "instagram.com", "linktr.ee", "wa.me", "tiktok.com", "m.me"];
+// Google shut down Business Profile websites (*.business.site) in 2024.
+const RETIRED_HOSTS = ["business.site"];
+const NO_OWN_SITE_KEYS = new Set(["social_only", "retired_site"]);
+
+const onHost = (host: string, list: string[]) => list.some((h) => host === h || host.endsWith(`.${h}`));
+
+function websiteHost(website: string): string | null {
+  try {
+    return parseWebsiteUrl(website)[0].hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether checking this website means a request. Social and retired sites
+ * are settled from the URL alone, so they shouldn't use up a scan's limited
+ * website checks.
+ */
+export function websiteNeedsFetch(website: string | null | undefined): boolean {
+  const value = website?.trim();
+  return Boolean(value) && noOwnSite(value!) === null;
+}
+
+/** A signal for a listing whose website is not really one, or null when it is worth fetching. */
+function noOwnSite(website: string): DetectedSignal | null {
+  const host = websiteHost(website);
+  if (!host) return null;
+  if (onHost(host, SOCIAL_HOSTS)) {
+    return {
+      key: "social_only",
+      label: "Uses a social media page instead of a website",
+      severity: 35,
+      certainty: "VERIFIED",
+      detail: host,
+    };
+  }
+  if (onHost(host, RETIRED_HOSTS)) {
+    return {
+      key: "retired_site",
+      label: "Website was a Google Business Profile site, which Google shut down in 2024",
+      severity: 40,
+      certainty: "VERIFIED",
+      detail: host,
+    };
+  }
+  return null;
+}
+
+// Phrases a parking or domain-sale page uses; specific enough that a real
+// business page doesn't contain them by accident.
+const PARKED =
+  /this domain (?:name )?(?:is|may be) for sale|buy this domain|domain (?:is )?parked|parked free|parkingcrew|sedoparking|afternic\.com|dan\.com\/buy-domain/i;
 
 const RETRYABLE_KINDS = new Set(["timeout", "connection"]);
 
@@ -145,7 +211,17 @@ function classifyFailure(error: SafeFetchError): DetectedSignal {
   }
 }
 
-function analyzePage(page: FetchedPage, currentYear: number): DetectedSignal[] {
+/** A non-empty <meta name="description">, whatever the attribute order. */
+function hasMetaDescription(html: string): boolean {
+  for (const [tag] of html.matchAll(/<meta\b[^>]*>/gi)) {
+    if (/\bname\s*=\s*["']?description\b/i.test(tag) && /\bcontent\s*=\s*(?:"\s*[^"\s]|'\s*[^'\s]|[^\s"'>])/i.test(tag)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function analyzePage(page: FetchedPage, currentYear: number, business: DetectableBusiness): DetectedSignal[] {
   const signals: DetectedSignal[] = [];
 
   if (page.status >= 400) {
@@ -173,11 +249,24 @@ function analyzePage(page: FetchedPage, currentYear: number): DetectedSignal[] {
     return signals;
   }
 
+  const html = page.body;
+
+  // A parked page belongs to a registrar, not the business; judging its
+  // markup would describe someone else's page.
+  if (PARKED.test(html)) {
+    signals.push({
+      key: "site_parked",
+      label: "Website domain is parked or for sale",
+      severity: 35,
+      certainty: "VERIFIED",
+    });
+    return signals;
+  }
+
   if (!page.finalUrl.startsWith("https://")) {
     signals.push({ key: "not_https", label: "Site is not served over HTTPS", severity: 15, certainty: "VERIFIED" });
   }
 
-  const html = page.body;
   // A truncated page may have cut off before <head> ends, so a missing tag
   // proves nothing in that case.
   const sawHead = !page.truncated || /<\/head>/i.test(html);
@@ -190,8 +279,29 @@ function analyzePage(page: FetchedPage, currentYear: number): DetectedSignal[] {
     });
   }
 
+  // Search results show this text under the business's name.
+  if (sawHead && !hasMetaDescription(html)) {
+    signals.push({
+      key: "no_meta_description",
+      label: "Site gives search engines no description to show",
+      severity: 5,
+      certainty: "VERIFIED",
+    });
+  }
+
   // The footer is where the copyright year lives; a cut-off page may hide a newer one.
   if (!page.truncated) {
+    // Only a fully read page proves the link is missing, and only a business
+    // with a phone has a number visitors would want to tap.
+    if (business.phone?.trim() && !/href\s*=\s*["']?\s*tel:/i.test(html)) {
+      signals.push({
+        key: "no_tap_to_call",
+        label: "Phone number can't be tapped to call on the homepage",
+        severity: 5,
+        certainty: "VERIFIED",
+      });
+    }
+
     const { stale, year } = detectStaleness(html, currentYear);
     if (stale && year) {
       signals.push({
@@ -208,7 +318,8 @@ function analyzePage(page: FetchedPage, currentYear: number): DetectedSignal[] {
 }
 
 function deriveWebsiteStatus(hasWebsite: boolean, signals: DetectedSignal[]): WebsiteStatus {
-  if (!hasWebsite) return "NONE_FOUND";
+  // A social page or a retired site is not a website of the business's own.
+  if (!hasWebsite || signals.some((s) => NO_OWN_SITE_KEYS.has(s.key))) return "NONE_FOUND";
   const websiteSignals = signals.filter((s) => WEBSITE_KEYS.has(s.key));
   if (websiteSignals.some((s) => s.certainty === "UNCERTAIN")) return "NEEDS_CHECK";
   if (websiteSignals.length > 0) return "NEEDS_WORK";
@@ -224,6 +335,13 @@ function listingIsEmpty(business: DetectableBusiness): boolean {
   return !((business.rating ?? 0) > 0) && !((business.reviewCount ?? 0) > 0);
 }
 
+const THIN_LISTING: DetectedSignal = {
+  key: "thin_listing",
+  label: "Little to no online reviews/rating found",
+  severity: 10,
+  certainty: "VERIFIED",
+};
+
 /**
  * Checks only publicly observable signals: does a site exist, does it load,
  * is it served over HTTPS, does it look mobile-friendly, does it look stale.
@@ -237,6 +355,7 @@ export async function analyzePresence(
   const fetchPage = deps.fetchPage ?? ((url: URL) => safeFetchPage(url));
   const currentYear = deps.currentYear ?? new Date().getFullYear();
   const signals: DetectedSignal[] = [];
+  let contacts: SiteContacts | undefined;
 
   const website = business.website?.trim();
   if (!website) {
@@ -247,25 +366,64 @@ export async function analyzePresence(
       certainty: "VERIFIED",
       detail: "The business listing does not include a website",
     });
+  } else if (noOwnSite(website)) {
+    signals.push(noOwnSite(website)!);
   } else {
     try {
       const page = await fetchWebsite(parseWebsiteUrl(website), fetchPage);
-      signals.push(...analyzePage(page, currentYear));
+      // A site that redirects to a social page is no site of its own either,
+      // and the social page's markup is not the business's to judge.
+      const landedOn = noOwnSite(page.finalUrl);
+      const pageSignals = landedOn ? [landedOn] : analyzePage(page, currentYear, business);
+      signals.push(...pageSignals);
+      // Only the business's own real page is read for contacts: not an error
+      // page (the host's), a parked page (the registrar's, whose mailto: would
+      // be the domain broker's), or a social page it redirected to.
+      const ownPage = !landedOn && !pageSignals.some((s) => s.key === "site_parked");
+      if (ownPage && page.status < 400 && page.isHtml) contacts = extractSiteContacts(page.body);
     } catch (err) {
       signals.push(classifyFailure(toFetchError(err)));
     }
   }
 
-  if (listingIsEmpty(business)) {
-    signals.push({
-      key: "thin_listing",
-      label: "Little to no online reviews/rating found",
-      severity: 10,
-      certainty: "VERIFIED",
-    });
-  }
+  if (listingIsEmpty(business)) signals.push({ ...THIN_LISTING });
 
-  return { signals, websiteStatus: deriveWebsiteStatus(Boolean(website), signals) };
+  return {
+    signals,
+    websiteStatus: deriveWebsiteStatus(Boolean(website), signals),
+    ...(contacts ? { contacts } : {}),
+  };
+}
+
+/** A signal as the database stores it, where certainty is a plain string column. */
+export function fromStoredSignal(stored: {
+  key: string;
+  label: string;
+  severity: number;
+  certainty: string;
+  detail: string | null;
+}): DetectedSignal {
+  return {
+    key: stored.key,
+    label: stored.label,
+    severity: stored.severity,
+    // The column defaults to VERIFIED; only an explicit UNCERTAIN is uncertain.
+    certainty: stored.certainty === "UNCERTAIN" ? "UNCERTAIN" : "VERIFIED",
+    detail: stored.detail ?? undefined,
+  };
+}
+
+/**
+ * The analysis of a listing whose website a scan chose not to fetch yet. The
+ * listing-level signals still apply; the website is recorded as unchecked,
+ * which is inconclusive rather than a gap, so it adds nothing to the score.
+ */
+export function deferWebsiteCheck(business: DetectableBusiness, detail: string): PresenceAnalysis {
+  const signals: DetectedSignal[] = [
+    { key: "site_check_deferred", label: "Website not checked yet", severity: 0, certainty: "UNCERTAIN", detail },
+  ];
+  if (listingIsEmpty(business)) signals.push({ ...THIN_LISTING });
+  return { signals, websiteStatus: deriveWebsiteStatus(true, signals) };
 }
 
 export async function detectGaps(business: DetectableBusiness, deps?: DetectDeps): Promise<DetectedSignal[]> {

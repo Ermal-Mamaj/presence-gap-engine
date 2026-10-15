@@ -3,10 +3,24 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { type ContactChannel, normalizeEmail, normalizePhone } from "@/lib/contacts";
 import { canTransition, CRM_STAGES, isCrmStage } from "@/lib/crm";
-import type { WebsiteStatus } from "@/lib/detect";
 import {
+  CHANNEL_LABEL,
+  defaultChannel,
+  DRAFT_CHANNELS,
+  DRAFT_LANGUAGES,
+  type DraftChannel,
+  isDraftChannel,
+  isDraftLanguage,
+} from "@/lib/outreachOptions";
+import type { DetectedSignal, WebsiteStatus } from "@/lib/detect";
+import { explainScore, gapContributions, UNCERTAIN_WEIGHT } from "@/lib/score";
+import { followUpDay } from "@/lib/leads";
+import {
+  formatDay,
   formatTimestamp,
+  localDay,
   WEBSITE_STATUS_HINT,
   WEBSITE_STATUS_LABEL,
   WEBSITE_STATUS_STYLE,
@@ -24,9 +38,11 @@ interface GapSignal {
 
 interface Outreach {
   id: string;
+  channel: string;
   subject: string | null;
   openLine: string;
   body: string;
+  sentAt: string | null;
   createdAt: string;
 }
 
@@ -42,18 +58,201 @@ interface Business {
   name: string;
   address: string | null;
   phone: string | null;
+  email: string | null;
+  facebook: string | null;
+  instagram: string | null;
   website: string | null;
   rating: number | null;
   reviewCount: number | null;
   score: number;
   crmStage: string;
   websiteStatus: WebsiteStatus;
+  siteCheckedAt: string | null;
   lastSeenAt: string;
   notes: string | null;
+  followUpAt: string | null;
   signals: GapSignal[];
   outreach: Outreach[];
   stageChanges: StageChange[];
-  campaign: { id: string; name: string };
+  campaign: { id: string; name: string; region: string; language: string };
+}
+
+const CHANNEL_NAMES: Record<ContactChannel, string> = { phone: "phone", email: "email", social: "social profile" };
+
+const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0$/, ""));
+
+/**
+ * Why the lead scored what it did, term by term, from the same function that
+ * computed it. If the weights changed since the last scan, the stored score
+ * and this recomputation differ, and the panel says so instead of hiding it.
+ */
+function ScoreExplanation({ business }: { business: Business }) {
+  // Stored certainty is a plain string; only an explicit UNCERTAIN is uncertain.
+  const signals: DetectedSignal[] = business.signals.map((s) => ({
+    key: s.key,
+    label: s.label,
+    severity: s.severity,
+    certainty: s.certainty === "UNCERTAIN" ? "UNCERTAIN" : "VERIFIED",
+  }));
+  const b = explainScore(signals, business);
+  const gaps = gapContributions(signals);
+  const credits = [
+    b.reviewCredit > 0 && `reviews +${fmt(b.reviewCredit)}`,
+    b.ratingCredit > 0 && `rating +${fmt(b.ratingCredit)}`,
+    b.contactCredit > 0 && `${b.channels.map((c) => CHANNEL_NAMES[c]).join(", ")} +${fmt(b.contactCredit)}`,
+  ].filter(Boolean);
+
+  return (
+    <section className="mt-6">
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Why this score</h2>
+      {gaps.length === 0 ? (
+        <p className="mt-2 text-sm text-zinc-500">No gap that counts was found, so the score is 0 however strong the business looks.</p>
+      ) : (
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm text-zinc-700 dark:text-zinc-300">
+          <dt className="text-zinc-500">Gap points</dt>
+          <dd>
+            <span className="font-mono">{fmt(b.gapPoints)}</span>
+            <span className="text-zinc-500">
+              {" "}
+              ={" "}
+              {gaps
+                .map(({ signal, points }) =>
+                  signal.certainty === "UNCERTAIN"
+                    ? `${signal.label} ${signal.severity} × ${UNCERTAIN_WEIGHT} (unverified)`
+                    : `${signal.label} ${fmt(points)}`
+                )
+                .join(" + ")}
+            </span>
+          </dd>
+          <dt className="text-zinc-500">Viability</dt>
+          <dd>
+            <span className="font-mono">× {fmt(b.viabilityMultiplier)}</span>
+            <span className="text-zinc-500">
+              {" "}
+              = 1{credits.length ? ` + ${credits.join(" + ")}` : " (nothing known about reviews, rating or contact)"}
+              {b.ghostPenaltyApplied && ", halved: the listing reports no reviews and there is no way to reach it"}
+            </span>
+          </dd>
+          <dt className="text-zinc-500">Score</dt>
+          <dd>
+            <span className="font-mono">{fmt(b.score)}</span>
+            {b.score >= 100 && <span className="text-zinc-500"> (capped at 100)</span>}
+          </dd>
+        </dl>
+      )}
+      {Math.abs(b.score - business.score) > 0.005 && (
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+          The stored score is {business.score.toFixed(1)}, from weights that have changed since this lead was scored. Use
+          Recalculate scores on the campaign page to update it.
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** The day to get back to this lead, with a way to clear it, and a flag once it is due. */
+function FollowUp({ day, onChange }: { day: string | null; onChange: (day: string | null) => void }) {
+  // The field keeps what is being typed; only a finished date is saved. The
+  // parent remounts it (key) whenever the saved day changes.
+  const [typed, setTyped] = useState(day ?? "");
+  const due = day !== null && day <= localDay();
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+      <label htmlFor="follow-up" className="text-zinc-600 dark:text-zinc-400">
+        Follow up on
+      </label>
+      <input
+        id="follow-up"
+        type="date"
+        value={typed}
+        onChange={(e) => {
+          // A date input reports each year as it is typed (0002, 0020, 0202,
+          // 2027); save only a cleared field or a plausible year.
+          const value = e.target.value;
+          setTyped(value);
+          // The whole value must be a four-digit year date: mid-typing a field
+          // can briefly hold "20202-10-18".
+          const year = Number(/^(\d{4})-\d{2}-\d{2}$/.exec(value)?.[1]);
+          if (value === "" || (year >= 2000 && year <= 2100)) onChange(value || null);
+        }}
+        className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+      />
+      {day && (
+        <button onClick={() => onChange(null)} className="text-xs text-zinc-500 underline hover:text-zinc-700">
+          Clear
+        </button>
+      )}
+      {due && (
+        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+          {day === localDay() ? "Due today" : `Overdue since ${formatDay(day)}`}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Drafts made before channels existed are stored as "email", which is what they were. */
+function channelLabel(channel: string): string {
+  return isDraftChannel(channel) ? CHANNEL_LABEL[channel] : channel;
+}
+
+const CONTACT_LINK_CLASS = "text-sky-600 hover:underline dark:text-sky-400";
+
+/**
+ * Every way to reach the lead, as links. The values are third-party data, so
+ * each is re-validated before it becomes an href, and shown as plain text if
+ * it doesn't pass. With nothing to go on, a web search is the next step.
+ */
+function ContactDetails({ business }: { business: Business }) {
+  const phone = normalizePhone(business.phone);
+  const email = normalizeEmail(business.email);
+  const facebook = safeHttpUrl(business.facebook);
+  const instagram = safeHttpUrl(business.instagram);
+
+  if (!business.phone && !email && !facebook && !instagram) {
+    const query = [business.name, business.address ?? business.campaign.region].join(" ");
+    return (
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        No contact details found.{" "}
+        <a
+          href={`https://www.google.com/search?q=${encodeURIComponent(query)}`}
+          target="_blank"
+          rel="noreferrer"
+          className={CONTACT_LINK_CLASS}
+        >
+          Search the web for this business
+        </a>
+      </p>
+    );
+  }
+
+  return (
+    <p className="mt-1 flex flex-wrap gap-x-3 text-sm">
+      {business.phone &&
+        (phone ? (
+          <a href={`tel:${phone.replace(/[^\d+]/g, "")}`} className={CONTACT_LINK_CLASS}>
+            {business.phone}
+          </a>
+        ) : (
+          <span className="text-zinc-500 dark:text-zinc-400">{business.phone}</span>
+        ))}
+      {email && (
+        <a href={`mailto:${email}`} className={CONTACT_LINK_CLASS}>
+          {email}
+        </a>
+      )}
+      {facebook && (
+        <a href={facebook} target="_blank" rel="noreferrer" className={CONTACT_LINK_CLASS}>
+          Facebook
+        </a>
+      )}
+      {instagram && (
+        <a href={instagram} target="_blank" rel="noreferrer" className={CONTACT_LINK_CLASS}>
+          Instagram
+        </a>
+      )}
+    </p>
+  );
 }
 
 export default function LeadDetailPage() {
@@ -66,6 +265,9 @@ export default function LeadDetailPage() {
   const [notes, setNotes] = useState("");
   const [notesState, setNotesState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [copied, setCopied] = useState(false);
+  /** The channel picked for the next draft; until one is, a channel the lead can be reached on. */
+  const [pickedChannel, setPickedChannel] = useState<DraftChannel | null>(null);
+  const [markingSent, setMarkingSent] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Whether the notes box holds edits the server hasn't accepted. A ref, not
@@ -102,9 +304,12 @@ export default function LeadDetailPage() {
     if (copyTimer.current) clearTimeout(copyTimer.current);
   }, []);
 
-  /** Copies the draft as pasteable text: subject line, blank line, body. */
+  /**
+   * Copies the draft as pasteable text. An email gets its subject line on top;
+   * a call script or a message is copied as it will be said or sent.
+   */
   async function copyDraft(draft: Outreach) {
-    const text = draft.subject ? `Subject: ${draft.subject}\n\n${draft.body}` : draft.body;
+    const text = draft.channel === "email" && draft.subject ? `Subject: ${draft.subject}\n\n${draft.body}` : draft.body;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -117,11 +322,15 @@ export default function LeadDetailPage() {
     }
   }
 
-  async function handleDraft() {
+  async function handleDraft(channel: DraftChannel) {
     setDrafting(true);
     setDraftError(null);
     try {
-      const res = await fetch(`/api/leads/${id}/draft`, { method: "POST" });
+      const res = await fetch(`/api/leads/${id}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel }),
+      });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? "Failed to draft outreach");
       load();
@@ -129,6 +338,47 @@ export default function LeadDetailPage() {
       setDraftError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setDrafting(false);
+    }
+  }
+
+  /** Saves or clears the follow-up day ("2026-10-17", or null). */
+  async function setFollowUp(day: string | null) {
+    if (notesDirty.current) await saveNotes();
+    const res = await fetch(`/api/leads/${id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ followUpAt: day }),
+    });
+    if (res.ok) {
+      setStageError(null);
+      load();
+    } else {
+      const data = await res.json().catch(() => null);
+      setStageError(data?.error ?? "Could not save the follow-up date");
+    }
+  }
+
+  /** Records that a draft went out; the server moves the lead to CONTACTED and plans a follow-up. */
+  async function markSent(draftId: string) {
+    if (markingSent) return;
+    setMarkingSent(true);
+    try {
+      if (notesDirty.current) await saveNotes();
+      // The browser's own date, so the follow-up counts from the user's day.
+      const res = await fetch(`/api/outreach/${draftId}/sent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ today: localDay() }),
+      });
+      if (res.ok) {
+        setDraftError(null);
+        load();
+      } else {
+        const data = await res.json().catch(() => null);
+        setDraftError(data?.error ?? "Could not mark the draft as sent");
+      }
+    } finally {
+      setMarkingSent(false);
     }
   }
 
@@ -202,6 +452,10 @@ export default function LeadDetailPage() {
 
   const currentStage = isCrmStage(business.crmStage) ? business.crmStage : null;
   const latestDraft = business.outreach[0] ?? null;
+  const channel = pickedChannel ?? defaultChannel(business);
+  const draftLanguage = isDraftLanguage(business.campaign.language)
+    ? DRAFT_LANGUAGES[business.campaign.language]
+    : business.campaign.language;
   const olderDrafts = business.outreach.slice(1);
 
   return (
@@ -214,9 +468,8 @@ export default function LeadDetailPage() {
         <div className="mt-2 flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">{business.name}</h1>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              {business.address ?? "No address"} {business.phone ? `· ${business.phone}` : ""}
-            </p>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{business.address ?? "No address"}</p>
+            <ContactDetails business={business} />
             {business.website &&
               (safeHttpUrl(business.website) ? (
                 <a
@@ -239,6 +492,11 @@ export default function LeadDetailPage() {
               </span>
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
                 Last seen in a scan {formatTimestamp(business.lastSeenAt)}
+                {/* The site status is only as current as the check behind it. */}
+                {business.website &&
+                  (business.siteCheckedAt
+                    ? ` · website checked ${formatTimestamp(business.siteCheckedAt)}`
+                    : " · website not checked yet")}
               </span>
             </div>
           </div>
@@ -276,6 +534,11 @@ export default function LeadDetailPage() {
               );
             })}
           </div>
+          <FollowUp
+            key={business.followUpAt ?? "none"}
+            day={business.followUpAt ? followUpDay(business.followUpAt) : null}
+            onChange={setFollowUp}
+          />
         </section>
 
         <section className="mt-6">
@@ -295,9 +558,13 @@ export default function LeadDetailPage() {
           )}
         </section>
 
+        <ScoreExplanation business={business} />
+
         <section className="mt-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Outreach draft</h2>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+              Outreach draft <span className="font-normal text-zinc-500">· in {draftLanguage}</span>
+            </h2>
             <div className="flex items-center gap-2">
               {latestDraft && (
                 <button
@@ -307,8 +574,23 @@ export default function LeadDetailPage() {
                   {copied ? "Copied" : "Copy"}
                 </button>
               )}
+              <label htmlFor="draft-channel" className="sr-only">
+                Draft for
+              </label>
+              <select
+                id="draft-channel"
+                value={channel}
+                onChange={(e) => setPickedChannel(e.target.value as DraftChannel)}
+                className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              >
+                {DRAFT_CHANNELS.map((c) => (
+                  <option key={c} value={c}>
+                    {CHANNEL_LABEL[c]}
+                  </option>
+                ))}
+              </select>
               <button
-                onClick={handleDraft}
+                onClick={() => handleDraft(channel)}
                 disabled={drafting}
                 className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
               >
@@ -321,11 +603,26 @@ export default function LeadDetailPage() {
             <p className="mt-2 text-sm text-zinc-500">No draft yet.</p>
           ) : (
             <div className="mt-3 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-              <p className="text-xs text-zinc-500">Subject</p>
+              <p className="text-xs font-medium text-zinc-500">{channelLabel(latestDraft.channel)}</p>
+              <p className="mt-2 text-xs text-zinc-500">{latestDraft.channel === "email" ? "Subject" : "Title"}</p>
               <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">{latestDraft.subject}</p>
-              <p className="mt-3 text-xs text-zinc-500">Body</p>
+              <p className="mt-3 text-xs text-zinc-500">{latestDraft.channel === "phone" ? "Script" : "Body"}</p>
               <p className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{latestDraft.body}</p>
-              <p className="mt-3 text-xs text-zinc-400">Drafted {formatTimestamp(latestDraft.createdAt)}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+                <span>Drafted {formatTimestamp(latestDraft.createdAt)}</span>
+                {latestDraft.sentAt ? (
+                  <span className="text-emerald-700 dark:text-emerald-400">Sent {formatTimestamp(latestDraft.sentAt)}</span>
+                ) : (
+                  <button
+                    onClick={() => markSent(latestDraft.id)}
+                    disabled={markingSent}
+                    title="Records the send. A lead not yet contacted moves to CONTACTED, with a follow-up in 3 days if none is planned."
+                    className="rounded-md border border-zinc-300 px-2 py-1 font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                  >
+                    {markingSent ? "Marking…" : "Mark as sent"}
+                  </button>
+                )}
+              </div>
             </div>
           )}
           {olderDrafts.length > 0 && (
@@ -339,7 +636,10 @@ export default function LeadDetailPage() {
                     key={o.id}
                     className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
                   >
-                    <p className="text-xs text-zinc-400">{formatTimestamp(o.createdAt)}</p>
+                    <p className="text-xs text-zinc-400">
+                      {channelLabel(o.channel)} · {formatTimestamp(o.createdAt)}
+                      {o.sentAt && ` · sent ${formatTimestamp(o.sentAt)}`}
+                    </p>
                     <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">{o.subject}</p>
                     <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-400">{o.body}</p>
                   </div>
