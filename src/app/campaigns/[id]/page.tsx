@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { contactChannels } from "@/lib/contacts";
 import { CRM_STAGES } from "@/lib/crm";
+import { DRAFT_LANGUAGES, isDraftLanguage } from "@/lib/outreachOptions";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
   formatDuration,
@@ -81,6 +82,7 @@ interface Campaign {
   region: string;
   niche: string;
   source: string;
+  language: string;
   status: string;
   errorMessage: string | null;
   businesses: Business[];
@@ -259,7 +261,8 @@ export default function CampaignDetailPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">{campaign.name}</h1>
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              {campaign.niche} in {campaign.region} · source: {campaign.source}
+              {campaign.niche} in {campaign.region} · source: {campaign.source} · drafts in{" "}
+              {isDraftLanguage(campaign.language) ? DRAFT_LANGUAGES[campaign.language] : campaign.language}
             </p>
           </div>
           <button

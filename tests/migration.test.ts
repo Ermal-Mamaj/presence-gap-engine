@@ -21,6 +21,7 @@ describe("migrations", () => {
     expect(migrations[1]).toMatch(/_reliability_scans$/);
     expect(migrations[2]).toMatch(/_contact_channels$/);
     expect(migrations[3]).toMatch(/_website_check_limit$/);
+    expect(migrations[4]).toMatch(/_draft_language$/);
   });
 
   it("date existing website checks from the last scan that saw the lead", () => {

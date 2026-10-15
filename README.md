@@ -12,7 +12,7 @@ This app covers stages 1–6 of that pipeline as a working tool:
 2. **Find** — pulls a raw business list from a source adapter (`src/lib/sources`).
 3. **Detect the gap** — checks each business for publicly observable signals: no website, unreachable site, no HTTPS, no mobile viewport tag, stale copyright year, thin/no reviews (`src/lib/detect.ts`). Every signal is marked `VERIFIED` or `UNCERTAIN`, and each business gets a website status: `NONE_FOUND`, `NEEDS_WORK`, `NEEDS_CHECK` or `GOOD`.
 4. **Qualify and rank** — combines gap severity with signs of a viable business (reviews, rating, phone) into a score from 0 to 100, and penalizes likely-ghost listings (`src/lib/score.ts`).
-5. **Reach out** — generates a specific, non-templated outreach draft per lead from its actual detected signals, via the Claude API (`src/lib/outreach.ts`).
+5. **Reach out** — generates a specific, non-templated outreach draft per lead from its actual detected signals, via the Claude API (`src/lib/outreach.ts`). Each campaign has a draft language (Albanian, English, Italian, German, Greek, Serbian or Macedonian; new campaigns suggest Albanian, existing ones stay English), and each draft is for one channel: an email, a script for a phone call, or a WhatsApp/Facebook message. The channel defaults to one the lead can be reached on, email first, and every draft records which it was for.
 6. **Convert / retain** — each lead has a CRM stage (New → Qualified → Contacted → Replied → Converted → Delivered → Retained / Dead) and a notes field, tracked per business.
 
 Stages 7–8 (fulfillment, hosting/upkeep, upsell) are operational, not
