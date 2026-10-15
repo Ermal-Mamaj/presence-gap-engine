@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { normalizeEmail, normalizeSocialUrl, type SocialNetwork } from "../contacts";
+import { normalizeEmail, normalizeSocialUrl, socialProfileFromWebsite, type SocialNetwork } from "../contacts";
 import type { RawBusiness } from "./types";
 
 const optionalText = (max: number) =>
@@ -37,5 +37,11 @@ const rawBusinessSchema = z.object({
 
 export function sanitizeRawBusiness(raw: unknown): RawBusiness | null {
   const parsed = rawBusinessSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) return null;
+  const business = parsed.data;
+  // A listing whose "website" is its Facebook or Instagram page has given us
+  // that profile, even with the profile tag itself empty.
+  business.facebook ??= socialProfileFromWebsite(business.website, "facebook");
+  business.instagram ??= socialProfileFromWebsite(business.website, "instagram");
+  return business;
 }

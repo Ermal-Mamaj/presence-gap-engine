@@ -19,7 +19,8 @@ export const WEBSITE_STATUS_LABEL: Record<WebsiteStatus, string> = {
 };
 
 export const WEBSITE_STATUS_HINT: Record<WebsiteStatus, string> = {
-  NONE_FOUND: "The listing has no website. The business may still have one — worth checking by hand.",
+  NONE_FOUND:
+    "The listing has no website of its own: none, only a social media page, or a retired one. The business may still have one — worth checking by hand.",
   NEEDS_WORK: "Verified problems were found on the site.",
   NEEDS_CHECK: "A check failed, so nothing is proven either way. Worth a manual look.",
   GOOD: "No problems were detected on the site.",

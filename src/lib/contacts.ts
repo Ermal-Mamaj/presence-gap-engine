@@ -76,6 +76,15 @@ export function normalizeSocialUrl(raw: string | null | undefined, network: Soci
   return `https://${canonicalHost}${path}${query}`;
 }
 
+/**
+ * The profile a listing's *website* points to, when it is a social page. Only a
+ * link counts here: a bare "klinika.al" is a domain, not a page name.
+ */
+export function socialProfileFromWebsite(website: string | null | undefined, network: SocialNetwork): string | undefined {
+  const value = website?.trim();
+  return value && value.includes("/") ? normalizeSocialUrl(value, network) : undefined;
+}
+
 export interface SiteContacts {
   email?: string;
   phone?: string;
