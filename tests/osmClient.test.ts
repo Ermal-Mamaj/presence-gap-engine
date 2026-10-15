@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGeocoder, fetchOverpass, overpassUrls } from "@/lib/sources/osmClient";
+import { createGeocoder, fetchOverpass, overpassUrls, sharedGeocoder } from "@/lib/sources/osmClient";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -55,10 +55,64 @@ describe("fetchOverpass", () => {
     expect(hosts).toEqual(["main.example", "mirror.example"]);
   });
 
-  it("does not retry a refusal that every server would repeat", async () => {
-    const hosts = scriptedFetch([status(406)]);
-    await expect(fetchOverpass("q", deps())).rejects.toThrow("Overpass API error: 406");
-    expect(hosts).toEqual(["main.example"]);
+  it("drops a server that gives a final answer, and fails without waiting when none is left", async () => {
+    const { waits, sleep } = fakeSleep();
+    const hosts = scriptedFetch([status(406), status(406)]);
+    await expect(fetchOverpass("q", deps(sleep))).rejects.toThrow("Overpass API error from mirror.example: 406");
+    expect(hosts).toEqual(["main.example", "mirror.example"]);
+    expect(waits).toEqual([]);
+  });
+
+  it("keeps retrying the busy main server after the mirror gives a final answer", async () => {
+    const { waits, sleep } = fakeSleep();
+    const hosts = scriptedFetch([status(504), status(404), ok]);
+    expect(await fetchOverpass("q", deps(sleep))).toEqual(ELEMENTS);
+    // The mirror is not asked again; the main server, merely busy, is.
+    expect(hosts).toEqual(["main.example", "mirror.example", "main.example"]);
+    expect(waits).toEqual([15_000]);
+  });
+
+  it("stops at once, saying why, when the query is too heavy for every server", async () => {
+    const { waits, sleep } = fakeSleep();
+    const heavy = () => Response.json({ elements: [], remark: "runtime error: Query timed out" });
+    scriptedFetch([heavy, heavy]);
+    await expect(fetchOverpass("q", deps(sleep))).rejects.toThrow(/too large for one query/);
+    expect(waits).toEqual([]);
+  });
+
+  it("keeps the real reason for a request that can never work, and moves on", async () => {
+    const hosts = scriptedFetch([
+      () => {
+        throw new TypeError("Failed to parse URL from not a url");
+      },
+      ok,
+    ]);
+    expect(await fetchOverpass("q", deps())).toEqual(ELEMENTS);
+    expect(hosts).toEqual(["main.example", "mirror.example"]);
+  });
+
+  it("waits as long as a rate-limited server asks, when that is longer than the usual pause", async () => {
+    const { waits, sleep } = fakeSleep();
+    const limited = () => new Response("slow down", { status: 429, headers: { "Retry-After": "30" } });
+    scriptedFetch([limited, status(504), ok]);
+    await fetchOverpass("q", deps(sleep));
+    expect(waits).toEqual([30_000]);
+  });
+
+  it("gives up early rather than start an attempt that would overrun the deadline", async () => {
+    let t = 0;
+    const hosts = scriptedFetch([status(504), status(504), ok]);
+    const result = fetchOverpass("q", {
+      urls: [MAIN, MIRROR],
+      roundDelaysMs: [0, 15_000],
+      now: () => t,
+      sleep: async (ms) => void (t += ms),
+      deadlineMs: 50_000,
+      attemptMs: 40_000,
+    });
+    // A 15s pause plus a 40s attempt would end past 50s, so round two never starts.
+    await expect(result).rejects.toThrow(/2 attempts on 2 servers/);
+    expect(hosts).toEqual(["main.example", "mirror.example"]);
   });
 
   it("pauses between rounds, and recovers when the main server frees up", async () => {
@@ -73,7 +127,7 @@ describe("fetchOverpass", () => {
     const { waits, sleep } = fakeSleep();
     scriptedFetch(Array.from({ length: 6 }, () => status(504)));
     await expect(fetchOverpass("q", deps(sleep))).rejects.toThrow(
-      /Overpass API is busy: 6 attempts on 2 servers failed \(last: Overpass API error: 504 Busy\)\. Try again/
+      /Overpass API is busy: 6 attempts on 2 servers failed \(last: Overpass API error from mirror\.example: 504 Busy\)\. Try again/
     );
     expect(waits).toEqual([15_000, 45_000]);
   });
@@ -86,8 +140,8 @@ describe("overpassUrls", () => {
     expect(urls.length).toBeGreaterThan(1);
   });
 
-  it("can be overridden", () => {
-    vi.stubEnv("OVERPASS_URLS", ` ${MIRROR} ,, ${MAIN}`);
+  it("can be overridden, ignoring entries that are not http(s) URLs", () => {
+    vi.stubEnv("OVERPASS_URLS", ` ${MIRROR} ,, overpass.example/api, ftp://x.example, ${MAIN}`);
     expect(overpassUrls()).toEqual([MIRROR, MAIN]);
   });
 });
@@ -142,10 +196,40 @@ describe("createGeocoder", () => {
     expect(requestedAt).toHaveLength(2);
   });
 
+  it("asks once for a region several scans want at the same moment", async () => {
+    const { geocode, requestedAt } = clockAndFetch();
+    const [a, b] = await Promise.all([geocode("Tirana"), geocode(" tirana ")]);
+    expect(a).toEqual(b);
+    expect(requestedAt).toHaveLength(1);
+  });
+
+  it("tries a busy Nominatim once more before giving up", async () => {
+    let calls = 0;
+    const { geocode } = clockAndFetch(() => (++calls === 1 ? new Response("busy", { status: 503 }) : Response.json(place)));
+    expect(await geocode("Tirana")).not.toBeNull();
+    expect(calls).toBe(2);
+  });
+
+  it("does not retry a final Nominatim refusal", async () => {
+    let calls = 0;
+    const { geocode } = clockAndFetch(() => {
+      calls++;
+      return new Response("bad", { status: 400, statusText: "Bad Request" });
+    });
+    await expect(geocode("Tirana")).rejects.toThrow("Nominatim error: 400");
+    expect(calls).toBe(1);
+  });
+
   it("asks again for a region it could not find, which may since have been corrected", async () => {
     const { geocode, requestedAt } = clockAndFetch(() => Response.json([]));
     expect(await geocode("Tiranna")).toBeNull();
     expect(await geocode("Tiranna")).toBeNull();
     expect(requestedAt).toHaveLength(2);
+  });
+});
+
+describe("sharedGeocoder", () => {
+  it("is one instance for the whole process", () => {
+    expect(sharedGeocoder()).toBe(sharedGeocoder());
   });
 });
