@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { analyzePresence, detectGaps, detectStaleness } from "@/lib/detect";
+import { analyzePresence, deferWebsiteCheck, detectGaps, detectStaleness } from "@/lib/detect";
 import { SafeFetchError, type FetchedPage } from "@/lib/safeFetch";
 
 const GOOD_HTML =
@@ -212,6 +212,45 @@ describe("analyzePresence: page quality signals", () => {
       expect.objectContaining({ key: "stale_site", detail: "2018", certainty: "VERIFIED" }),
     ]);
     expect(result.websiteStatus).toBe("NEEDS_WORK");
+  });
+});
+
+describe("analyzePresence: contact links on the business's own page", () => {
+  const withLinks = GOOD_HTML.replace(
+    "<body>",
+    '<body><a href="mailto:info@example.com">Mail</a><a href="tel:+355691234567">Call</a>'
+  );
+
+  it("returns the page's mailto: and tel: links", async () => {
+    const result = await analyzePresence({ website: "https://example.com" }, deps(async () => page({ body: withLinks })));
+    expect(result.contacts).toEqual({ email: "info@example.com", phone: "+355691234567" });
+  });
+
+  it("does not read contacts from an error page, which belongs to the host", async () => {
+    const result = await analyzePresence(
+      { website: "https://example.com" },
+      deps(async () => page({ status: 503, body: withLinks }))
+    );
+    expect(result.contacts).toBeUndefined();
+  });
+
+  it("has no contacts when no page was read", async () => {
+    expect((await analyzePresence({ website: null }, deps(vi.fn()))).contacts).toBeUndefined();
+  });
+});
+
+describe("deferWebsiteCheck", () => {
+  it("records the website as unchecked: inconclusive, and worth nothing to the score", () => {
+    const result = deferWebsiteCheck({ website: "example.com" }, "over the limit");
+    expect(result.websiteStatus).toBe("NEEDS_CHECK");
+    expect(result.signals).toEqual([
+      expect.objectContaining({ key: "site_check_deferred", severity: 0, certainty: "UNCERTAIN", detail: "over the limit" }),
+    ]);
+  });
+
+  it("still applies the signals that come from the listing alone", () => {
+    const result = deferWebsiteCheck({ website: "example.com", reviewCount: 0, rating: 0 }, "x");
+    expect(keys(result.signals)).toEqual(["site_check_deferred", "thin_listing"]);
   });
 });
 

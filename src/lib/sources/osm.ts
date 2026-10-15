@@ -90,7 +90,7 @@ function tagsForNiche(niche: string): string[] {
   return [];
 }
 
-interface OverpassElement {
+export interface OverpassElement {
   type: string;
   id: number;
   lat?: number;
@@ -99,7 +99,12 @@ interface OverpassElement {
   tags?: Record<string, string>;
 }
 
-function elementToBusiness(el: OverpassElement): RawBusiness | null {
+/**
+ * One Overpass element as a raw business. OSM spells most contact keys two
+ * ways ("phone" and "contact:phone"), so both are read; the values are free
+ * text and get normalized by sanitizeRawBusiness, not here.
+ */
+export function elementToBusiness(el: OverpassElement): RawBusiness | null {
   const tags = el.tags ?? {};
   const name = tags.name;
   if (!name) return null;
@@ -116,7 +121,10 @@ function elementToBusiness(el: OverpassElement): RawBusiness | null {
   return {
     name,
     address: addressParts.length ? addressParts.join(" ") : undefined,
-    phone: tags.phone ?? tags["contact:phone"],
+    phone: tags.phone ?? tags["contact:phone"] ?? tags["contact:mobile"] ?? tags.mobile,
+    email: tags.email ?? tags["contact:email"],
+    facebook: tags["contact:facebook"] ?? tags.facebook,
+    instagram: tags["contact:instagram"] ?? tags.instagram,
     website: tags.website ?? tags["contact:website"],
     latitude: lat,
     longitude: lon,
@@ -126,7 +134,9 @@ function elementToBusiness(el: OverpassElement): RawBusiness | null {
 
 export const osmSource: BusinessSource = {
   id: "OSM",
-  async search({ region, niche, limit = 60 }: SearchBox): Promise<RawBusiness[]> {
+  // No lead cap of its own: the Overpass query returns at most 200 elements,
+  // and the scan caps the expensive part, website checks, itself.
+  async search({ region, niche, limit }: SearchBox): Promise<RawBusiness[]> {
     const tags = tagsForNiche(niche);
     if (!tags.length) {
       throw new Error(
@@ -169,7 +179,7 @@ export const osmSource: BusinessSource = {
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
       businesses.push(biz);
-      if (businesses.length >= limit) break;
+      if (limit !== undefined && businesses.length >= limit) break;
     }
     return businesses;
   },

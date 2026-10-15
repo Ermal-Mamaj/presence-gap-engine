@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { normalizeEmail, normalizePhone } from "@/lib/contacts";
 import { canTransition, CRM_STAGES, isCrmStage } from "@/lib/crm";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
@@ -42,18 +43,81 @@ interface Business {
   name: string;
   address: string | null;
   phone: string | null;
+  email: string | null;
+  facebook: string | null;
+  instagram: string | null;
   website: string | null;
   rating: number | null;
   reviewCount: number | null;
   score: number;
   crmStage: string;
   websiteStatus: WebsiteStatus;
+  siteCheckedAt: string | null;
   lastSeenAt: string;
   notes: string | null;
   signals: GapSignal[];
   outreach: Outreach[];
   stageChanges: StageChange[];
-  campaign: { id: string; name: string };
+  campaign: { id: string; name: string; region: string };
+}
+
+const CONTACT_LINK_CLASS = "text-sky-600 hover:underline dark:text-sky-400";
+
+/**
+ * Every way to reach the lead, as links. The values are third-party data, so
+ * each is re-validated before it becomes an href, and shown as plain text if
+ * it doesn't pass. With nothing to go on, a web search is the next step.
+ */
+function ContactDetails({ business }: { business: Business }) {
+  const phone = normalizePhone(business.phone);
+  const email = normalizeEmail(business.email);
+  const facebook = safeHttpUrl(business.facebook);
+  const instagram = safeHttpUrl(business.instagram);
+
+  if (!business.phone && !email && !facebook && !instagram) {
+    const query = [business.name, business.address ?? business.campaign.region].join(" ");
+    return (
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        No contact details found.{" "}
+        <a
+          href={`https://www.google.com/search?q=${encodeURIComponent(query)}`}
+          target="_blank"
+          rel="noreferrer"
+          className={CONTACT_LINK_CLASS}
+        >
+          Search the web for this business
+        </a>
+      </p>
+    );
+  }
+
+  return (
+    <p className="mt-1 flex flex-wrap gap-x-3 text-sm">
+      {business.phone &&
+        (phone ? (
+          <a href={`tel:${phone.replace(/[^\d+]/g, "")}`} className={CONTACT_LINK_CLASS}>
+            {business.phone}
+          </a>
+        ) : (
+          <span className="text-zinc-500 dark:text-zinc-400">{business.phone}</span>
+        ))}
+      {email && (
+        <a href={`mailto:${email}`} className={CONTACT_LINK_CLASS}>
+          {email}
+        </a>
+      )}
+      {facebook && (
+        <a href={facebook} target="_blank" rel="noreferrer" className={CONTACT_LINK_CLASS}>
+          Facebook
+        </a>
+      )}
+      {instagram && (
+        <a href={instagram} target="_blank" rel="noreferrer" className={CONTACT_LINK_CLASS}>
+          Instagram
+        </a>
+      )}
+    </p>
+  );
 }
 
 export default function LeadDetailPage() {
@@ -214,9 +278,8 @@ export default function LeadDetailPage() {
         <div className="mt-2 flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">{business.name}</h1>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              {business.address ?? "No address"} {business.phone ? `· ${business.phone}` : ""}
-            </p>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{business.address ?? "No address"}</p>
+            <ContactDetails business={business} />
             {business.website &&
               (safeHttpUrl(business.website) ? (
                 <a
@@ -239,6 +302,11 @@ export default function LeadDetailPage() {
               </span>
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
                 Last seen in a scan {formatTimestamp(business.lastSeenAt)}
+                {/* The site status is only as current as the check behind it. */}
+                {business.website &&
+                  (business.siteCheckedAt
+                    ? ` · website checked ${formatTimestamp(business.siteCheckedAt)}`
+                    : " · website not checked yet")}
               </span>
             </div>
           </div>

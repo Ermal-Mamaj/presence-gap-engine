@@ -70,7 +70,38 @@ A campaign's scan (`src/lib/scan.ts`) is built so that running it again can neve
   survive there, and after moving to Postgres (see Setup) a scan still has to
   fit the platform's limit. Static export cannot work, because the app needs
   its API routes.
+- **Website checks are capped, leads are not.** A scan fetches at most 60
+  websites, because a check can take seconds, but a lead without a website
+  costs no request, so every lead the source returns is saved. OpenStreetMap
+  returns up to 200 per query. Websites over the limit wait for the next
+  scan, which checks never-checked sites first and then the least recently
+  checked, so a large campaign is covered over a few scans. A deferred site
+  that was checked before keeps that result; one that never was reads *Website
+  not checked yet*. The lead page says when its website was last checked, and
+  scan history counts the deferred sites. Until now a campaign was cut at 60
+  leads in whatever order the source returned them: about 20 of 80 dentists
+  in Tirana were never scored.
 - **Bad records are skipped, not fatal.** A record without a name is dropped; an impossible field (a rating of 47) becomes "unknown". If a source returns records but none are usable, the scan fails instead of silently saving nothing. An empty result is a valid result.
+
+## Contact details
+
+A drafted email needs someone to send it to, so a scan keeps every way to
+reach a business that it can find (`src/lib/contacts.ts`):
+
+- **From the listing.** Phone (falling back to a mobile number), email,
+  Facebook and Instagram, under either OSM spelling (`email` or
+  `contact:email`). The values are free text, so they are normalized: the
+  first usable address in "a; b", a profile link from a bare page name, and
+  share buttons, other hosts and malformed values dropped.
+- **From the business's own site.** When a website check reads a real page,
+  its first `mailto:` and `tel:` links fill in an email or phone the listing
+  left out. They never override the listing, and an error page is never read.
+- **Kept across scans.** As with other fields, a contact a later scan no longer
+  finds is kept rather than erased.
+
+Coverage is thin, which is the point of showing it. In a sample of 80 dentists
+in Tirana on OpenStreetMap, 10 listed a phone, 7 an email and 3 a Facebook
+page. A lead with nothing to go on gets a web-search link on its page.
 
 ## Website checks and certainty
 
@@ -83,9 +114,10 @@ A failed request is **not** proof of a gap. Network errors, timeouts, TLS failur
 `score = gap points × viability multiplier`, clamped to 0–100 (`src/lib/score.ts`; `explainScore` returns every term).
 
 - **Gap points** are the sum of signal severities (no website 40, unreachable 35, HTTP error 30, TLS problem 25, no HTTPS 15, no mobile viewport 15, stale site 10, thin listing 10). An `UNCERTAIN` signal counts for half: one failed request makes a lead worth a look, but is not proof. This 0.5 is a judgement call, not a measured value.
-- **Viability multiplier** is 1 plus up to 0.6 for review volume (log scale, full credit at 200 reviews), up to 0.3 for rating, and 0.1 for a phone number. Weights are unchanged from the original model.
-- **Unknown is not zero.** A review count or rating the source never reported earns no credit but is not evidence of an empty listing. A *reported* 0 reviews / unrated listing with no phone is treated as a likely ghost and halved. Likewise "little to no reviews" is only flagged when the source actually reports review data (OpenStreetMap never does).
+- **Viability multiplier** is 1 plus up to 0.6 for review volume (log scale, full credit at 200 reviews), up to 0.3 for rating, and 0.1 for each distinct way to reach the business: phone, email, and a social profile (Facebook and Instagram together count once), so up to 0.3. A lead nobody can contact can't convert, and since OpenStreetMap reports no reviews or ratings, reachability is the only viability evidence most OSM leads have. Before it counted, OSM leads with the same gap scored either 40 or 44, so the ranking was mostly a tie. The 0.1 is a judgement call, like the 0.5 below; review and rating weights are unchanged from the original model.
+- **Unknown is not zero.** A review count or rating the source never reported earns no credit but is not evidence of an empty listing. A *reported* 0 reviews / unrated listing with no way to reach it is treated as a likely ghost and halved. Likewise "little to no reviews" is only flagged when the source actually reports review data (OpenStreetMap never does).
 - Invalid inputs (a rating outside 0–5, negative or non-finite counts or severities) are ignored, so the score is always finite and within range.
+- **Rescoring needs no rescan.** A score is stored when a scan runs. After changing a weight, **Recalculate scores** on a campaign (`POST /api/campaigns/<id>/rescore`, `src/lib/rescore.ts`) recomputes every lead from its stored signals and listing fields without fetching anything, and writes nothing but the score.
 
 ## CRM stages
 
@@ -112,8 +144,11 @@ Everything a scan concluded is visible, including how sure it was:
   instead of silently vanishing.
 - **Earlier outreach drafts**, collapsed under the current one, with a copy
   button that yields the subject and body as pasteable text.
-- **Filter and sort** the lead table by CRM stage, site status, score or name.
-  This is client-side: every lead is already on the page.
+- **Contact details** per lead: which channels exist in the campaign table, and
+  the phone, email and profile links themselves on the lead page.
+- **Filter and sort** the lead table by CRM stage, site status, whether a lead
+  can be contacted at all, score or name. This is client-side: every lead is
+  already on the page.
 - **CSV export** per campaign (`GET /api/campaigns/<id>/export`). Verified and
   unverified gaps are separate columns, so the certainty split survives into a
   spreadsheet. Fields are RFC 4180 quoted and a leading `=`, `+`, `-` or `@` is

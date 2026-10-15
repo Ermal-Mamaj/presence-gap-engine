@@ -2,6 +2,11 @@ export interface RawBusiness {
   name: string;
   address?: string;
   phone?: string;
+  email?: string;
+  /** Profile URL or page name; normalized by sanitizeRawBusiness. */
+  facebook?: string;
+  /** Profile URL or handle; normalized by sanitizeRawBusiness. */
+  instagram?: string;
   website?: string;
   latitude?: number;
   longitude?: number;
