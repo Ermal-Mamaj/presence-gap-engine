@@ -43,6 +43,7 @@ interface Outreach {
   openLine: string;
   body: string;
   sentAt: string | null;
+  templateId: string | null;
   createdAt: string;
 }
 
@@ -616,7 +617,10 @@ export default function LeadDetailPage() {
               <p className="mt-3 text-xs text-zinc-500">{latestDraft.channel === "phone" ? "Script" : "Body"}</p>
               <p className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{latestDraft.body}</p>
               <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
-                <span>Drafted {formatTimestamp(latestDraft.createdAt)}</span>
+                <span>
+                  Drafted {formatTimestamp(latestDraft.createdAt)}
+                  {latestDraft.templateId && " from a template"}
+                </span>
                 {latestDraft.sentAt ? (
                   <span className="text-emerald-700 dark:text-emerald-400">Sent {formatTimestamp(latestDraft.sentAt)}</span>
                 ) : (

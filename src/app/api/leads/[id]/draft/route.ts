@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 
 const STATUS_BY_KIND = {
   no_verified_gaps: 422,
+  no_template: 422,
   not_configured: 503,
   invalid_response: 502,
   upstream: 502,

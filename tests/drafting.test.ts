@@ -4,6 +4,9 @@ import { BulkDraftInProgressError, draftForLead, draftTopLeads, MAX_BULK_DRAFTS 
 import { OutreachError, type OutreachDeps } from "@/lib/outreach";
 import { createTestDb } from "./helpers/db";
 
+// These cover the path where the model writes the draft; templates are tests/templates.test.ts.
+process.env.DRAFT_SOURCE = "claude";
+
 const db = createTestDb();
 const { prisma } = db;
 afterAll(() => db.cleanup());

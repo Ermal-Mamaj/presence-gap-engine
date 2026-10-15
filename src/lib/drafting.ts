@@ -1,10 +1,19 @@
-import type { Prisma, PrismaClient } from "@/generated/prisma/client";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { fromStoredSignal } from "./detect";
 import { draftOutreach, OutreachError, type OutreachDeps } from "./outreach";
 import { defaultChannel, DEFAULT_LANGUAGE, type DraftChannel, isDraftLanguage } from "./outreachOptions";
 import { mapWithConcurrency } from "./scan";
+import { draftFromTemplate, type LeadForDraft } from "./templates";
 
-type LeadForDraft = Prisma.BusinessGetPayload<{ include: { signals: true; campaign: true } }>;
+export type DraftSource = "templates" | "claude";
+
+/**
+ * Where draft text comes from. Templates, written by a person and filled in
+ * by code, unless DRAFT_SOURCE=claude asks for the model to write it.
+ */
+export function draftSource(): DraftSource {
+  return process.env.DRAFT_SOURCE?.trim().toLowerCase() === "claude" ? "claude" : "templates";
+}
 
 /**
  * Drafts and stores one outreach message for a lead, in its campaign's
@@ -15,9 +24,23 @@ type LeadForDraft = Prisma.BusinessGetPayload<{ include: { signals: true; campai
 export async function draftForLead(
   prisma: PrismaClient,
   lead: LeadForDraft,
-  options: { channel?: DraftChannel; deps?: OutreachDeps } = {}
+  options: { channel?: DraftChannel; deps?: OutreachDeps; source?: DraftSource } = {}
 ) {
   const channel = options.channel ?? defaultChannel(lead);
+  if ((options.source ?? draftSource()) === "templates") {
+    const draft = await draftFromTemplate(prisma, lead, channel);
+    return prisma.outreach.create({
+      data: {
+        businessId: lead.id,
+        channel,
+        templateId: draft.templateId,
+        subject: draft.subject,
+        // A template has no separate open line; its first line serves.
+        openLine: draft.body.split("\n")[0].trim(),
+        body: draft.body,
+      },
+    });
+  }
   const language = isDraftLanguage(lead.campaign.language) ? lead.campaign.language : DEFAULT_LANGUAGE;
   const draft = await draftOutreach(
     {
