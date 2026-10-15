@@ -89,3 +89,12 @@ describe("whatsappLink", () => {
     expect(whatsappLink(null)).toBeUndefined();
   });
 });
+
+describe("reviewQueue: drafts overtaken by the web check", () => {
+  it("flags an unsent draft written before a site was found", async () => {
+    const { id } = await lead("Found later", {}, [{}]);
+    await prisma.business.update({ where: { id }, data: { onlineCheck: "found", onlineCheckedAt: new Date(Date.now() + 1000) } });
+    const q = await reviewQueue(prisma, campaignId);
+    expect(q.ready.find((c) => c.leadId === id)?.draft?.outdated).toBe(true);
+  });
+});

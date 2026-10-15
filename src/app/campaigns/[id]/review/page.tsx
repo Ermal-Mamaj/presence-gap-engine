@@ -31,6 +31,7 @@ interface Card {
     sentAt: string | null;
     fromTemplate: boolean;
     createdAt: string;
+    outdated: boolean;
   } | null;
 }
 
@@ -321,6 +322,12 @@ function CardDetail({
             {isDraftChannel(draft.channel) ? CHANNEL_LABEL[draft.channel] : draft.channel}
             {draft.fromTemplate && " · from a template"} · drafted {formatTimestamp(draft.createdAt)}
           </p>
+          {draft.outdated && !draft.sentAt && (
+            <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              Written before the web check found a website for this business, so it may say it has none. Draft it again from
+              the lead page after the next scan has checked the site.
+            </p>
+          )}
           {draft.sentAt ? (
             <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
               {draft.subject && <p className="font-medium text-zinc-900 dark:text-zinc-50">{draft.subject}</p>}
