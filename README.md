@@ -119,13 +119,17 @@ page. A lead with nothing to go on gets a web-search link on its page.
 
 ## The online check
 
-A business with no website on OpenStreetMap often has one. **Check offline leads online** on a campaign (`src/lib/onlineCheck.ts`) searches the web for up to 20 leads whose site status is *None listed*, one at a time, through Groq’s `browser_search` or Tavily (`.env.example`). With both keys set, Groq goes first; when it hits its rate limit or runs out of credits, Tavily takes over, and Groq is tried again a minute later. A rejected key is skipped for the rest of the run. The search only suggests pages: directories, maps and social sites are dropped, and each remaining candidate is fetched through the same guarded fetcher as website checks and matched against the lead. Its phone (last 8 digits, however written), or its name together with its street or a domain made of its name, is a match; generic words ("Klinika", "Dental") and the city’s name don’t count as the name. The verdict, with its evidence, is shown on the lead:
+A business with no website on OpenStreetMap often has one. **Check offline leads online** on a campaign (`src/lib/onlineCheck.ts`) searches the web for up to 20 leads whose site status is *None listed*, one at a time, through Groq’s `browser_search` or Tavily (`.env.example`). With both keys set, Groq goes first; when it hits its rate limit or runs out of credits, Tavily takes over, and Groq is tried again when it said to (a minute if it didn’t). A rejected key is skipped for the rest of the run. Groq’s free plan allows 8,000 tokens a minute and 200,000 a day, and one search takes 4,000–8,000, so it covers about one lead a minute and 25–30 a day.
 
-- **Found:** the page becomes the lead’s website, *No website found* is no longer claimed, and the next scan checks the site like any other. An unsent draft written before is flagged on its review card.
+The search only suggests pages: directories, maps and social sites are dropped, and up to five candidates, those on a domain made of the lead’s name first, are fetched through the same guarded fetcher as website checks and matched against the lead: its phone (last 8 digits, however written), its name, and its street or city. Generic words ("Klinika", "Dental") and the city’s name don’t count as the name, and a name made only of them ("Klinikë Dentare") never matches. The verdict, with its evidence, is shown on the lead:
+
+- **Found:** a page on a domain made of its name (`arberi.al` for Arbëri) shows its phone, or its name and its street or city. The page becomes the lead’s website, *No website found* is no longer claimed, and the next scan checks the site like any other. An unsent draft written before is flagged on its review card.
 - **Not online:** nothing matched; the lead really looks offline.
-- **Unsure:** only the name matched; flagged for a person to look at.
+- **Unsure,** flagged for a person to look at: the phone or name and street are on a page elsewhere (often a directory listing; no list of directories is complete); a namesake domain doesn’t mention the street or city (MonDent in Tirana vs. `mondent.ba` in Bosnia); a site named after the lead didn’t load (perhaps its old site); or its name and street or city are on some page.
 
-A verdict is reused for 30 days. A rate-limited search is retried once after 20 seconds; if it fails again, the run stops and says why, keeping the verdicts so far.
+A verdict is reused for 30 days. A rate-limited search is retried up to three times, after the wait the provider asked for (20 seconds if it didn’t say, at most 65); if it is still limited, the run stops and says why, keeping the verdicts so far.
+
+These rules come from live runs on Tirana dentists listed with no website, each of which caught a wrong answer: listings on `exa.ai` and `geoview.info` taken as the site, `mondent.ba`, "Dentist ne Tirane" matching through the city, and a generic name matching another clinic.
 
 ## Website checks and certainty
 

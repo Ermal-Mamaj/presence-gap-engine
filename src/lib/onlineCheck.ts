@@ -9,11 +9,12 @@ import { computeScore } from "./score";
  * code decides, by fetching each candidate and matching the lead's phone,
  * name and street on it. A search result alone never counts.
  *
- * - found: a page matches strongly (the phone, or the name with the street or
- *   a domain made of the name). It becomes the lead's website, so the next
- *   scan checks it like any other, and "no website" is no longer claimed.
+ * - found: a page on a domain made of the lead's name shows its phone or its
+ *   name. It becomes the lead's website, so the next scan checks it like any
+ *   other, and "no website" is no longer claimed.
  * - none: nothing matched. The lead really looks offline.
- * - unsure: only the name matched. Flagged for a person to look at.
+ * - unsure: a page elsewhere matched (possibly a directory listing), or only
+ *   the name did. Flagged for a person to look at.
  */
 
 export type Verdict = "found" | "none" | "unsure";
@@ -44,7 +45,9 @@ export interface SearchProvider {
 export class SearchError extends Error {
   constructor(
     message: string,
-    readonly busy = false
+    readonly busy = false,
+    /** How long the provider asked to wait (its Retry-After), if it said. */
+    readonly retryAfterMs: number | null = null
   ) {
     super(message);
     this.name = "SearchError";
@@ -66,10 +69,18 @@ async function postJson(url: string, key: string, body: object, label: string): 
     throw new SearchError(`${label} could not be reached: ${err instanceof Error ? err.message : "network error"}`, true);
   }
   if (!res.ok) {
-    const detail = (await res.text().catch(() => "")).slice(0, 200);
+    const text = await res.text().catch(() => "");
+    let detail = text;
+    try {
+      const parsed = JSON.parse(text) as { error?: { message?: unknown } | string; detail?: { error?: unknown } };
+      const message = typeof parsed.error === "string" ? parsed.error : (parsed.error?.message ?? parsed.detail?.error);
+      if (typeof message === "string") detail = message;
+    } catch {}
     // 429 is a rate limit; Tavily answers 432 and 433 when a plan's credits run out.
     const limited = res.status === 429 || res.status === 432 || res.status === 433 || res.status >= 500;
-    throw new SearchError(`${label} error ${res.status}: ${detail}`, limited);
+    const seconds = Number(res.headers.get("retry-after"));
+    const retryAfterMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+    throw new SearchError(`${label} error ${res.status}: ${detail.slice(0, 200)}`, limited, retryAfterMs);
   }
   return res.json();
 }
@@ -96,7 +107,8 @@ export function tavilyProvider(key: string): SearchProvider {
 
 /** Every http(s) URL in a piece of text, without trailing punctuation or citation marks. */
 export function urlsIn(text: string): string[] {
-  return [...text.matchAll(/https?:\/\/[^\s<>"'`)\]【】]+/g)].map((m) => m[0].replace(/[.,;:!?]+$/, ""));
+  // A backslash ends a URL too: Groq's tool output arrives JSON-escaped, so "\n" follows URLs as text.
+  return [...text.matchAll(/https?:\/\/[^\s<>"'`)\]【】\\]+/g)].map((m) => m[0].replace(/[.,;:!?]+$/, ""));
 }
 
 /**
@@ -169,14 +181,16 @@ export function fallbackProvider(providers: SearchProvider[], now: () => number 
           return urls;
         } catch (err) {
           if (!(err instanceof SearchError)) throw err;
-          restingUntil.set(p, err.busy ? now() + REST_AFTER_LIMIT_MS : Infinity);
+          restingUntil.set(p, err.busy ? now() + (err.retryAfterMs ?? REST_AFTER_LIMIT_MS) : Infinity);
           failures.push(err);
         }
       }
       if (failures.length === 0) throw new SearchError("Every search provider failed; check the API keys in .env.");
+      const waits = failures.map((f) => f.retryAfterMs).filter((ms): ms is number => ms !== null);
       throw new SearchError(
         failures.map((f) => f.message).join("; "),
-        failures.some((f) => f.busy)
+        failures.some((f) => f.busy),
+        waits.length ? Math.min(...waits) : null
       );
     },
   };
@@ -211,7 +225,7 @@ const GENERIC = new Set(
   (
     "klinika klinike klinik dentare dentar dental dentist dentistry clinic studio studioja qendra qendr center centre " +
     "dr doktor shpk sh p k the and of restorant restaurant kafe cafe bar hotel salon sallon parukeri berber farmaci " +
-    "pharmacy shop dyqan market agjenci agency group grup ltd llc"
+    "pharmacy shop dyqan market agjenci agency group grup ltd llc ne per"
   ).split(" ")
 );
 
@@ -222,11 +236,20 @@ const GENERIC = new Set(
  * dental page in Tirana.
  */
 function significantTokens(name: string, area: string): string[] {
-  const areaWords = normalize(area).split(" ").filter((w) => w.length >= 4);
-  const isArea = (t: string) => areaWords.some((w) => t.slice(0, 5) === w.slice(0, 5));
+  return ownWords(name, area).filter((t) => t.length >= 3);
+}
+
+/** The words of a name that are neither generic nor the area's, however short ("aa"). */
+function ownWords(name: string, area: string): string[] {
   return normalize(name)
     .split(" ")
-    .filter((t) => t.length >= 3 && !GENERIC.has(t) && !isArea(t));
+    .filter((t) => t.length > 0 && !GENERIC.has(t) && !isAreaWord(t, area));
+}
+
+function isAreaWord(word: string, area: string): boolean {
+  return normalize(area)
+    .split(" ")
+    .some((w) => w.length >= 4 && word.slice(0, 5) === w.slice(0, 5));
 }
 
 /** The last 8 digits, enough to match a number written with or without its country code. */
@@ -245,7 +268,10 @@ function streetTokens(address: string | null | undefined, area: string): string[
 }
 
 /** What a page shows of the lead: each piece of evidence, in words. */
-export function matchPage(target: CheckTarget, page: { url: string; html: string }): { strong: boolean; name: boolean; evidence: string[] } {
+export function matchPage(
+  target: CheckTarget,
+  page: { url: string; html: string }
+): { strong: boolean; phone: boolean; name: boolean; local: boolean; ownDomain: boolean; evidence: string[] } {
   const text = normalize(page.html.replace(/<[^>]+>/g, " "));
   const evidence: string[] = [];
 
@@ -255,32 +281,63 @@ export function matchPage(target: CheckTarget, page: { url: string; html: string
     [...page.html.matchAll(/\+?\d[\d\s().\-/]{6,}\d/g)].some((m) => m[0].replace(/\D/g, "").endsWith(key));
   if (phoneOnPage) evidence.push(`its phone number (${target.phone}) is on the page`);
 
+  // A name made only of generic words ("Klinikë Dentare", "Dentist në Tiranë") is on
+  // countless pages, so it never counts; one with a short word of its own counts whole.
   const tokens = significantTokens(target.name, target.area);
   const name =
     tokens.length > 0
       ? tokens.every((t) => text.includes(t))
-      : normalize(target.name).length > 0 && text.includes(normalize(target.name));
+      : ownWords(target.name, target.area).length > 0 && text.includes(normalize(target.name));
   if (name) evidence.push(`its name "${target.name}" is on the page`);
 
   const street = streetTokens(target.address, target.area).find((t) => text.includes(t));
   if (street) evidence.push(`its street ("${street}") is on the page`);
 
-  let host = "";
-  try {
-    host = new URL(page.url).hostname.replace(/[^a-z0-9]/g, "");
-  } catch {}
-  const domainName = tokens.find((t) => t.length >= 4 && host.includes(t.replace(/[^a-z0-9]/g, "")));
+  // Some sign it is this business in this place, not another one with the same name.
+  const local = Boolean(street) || text.split(" ").some((w) => isAreaWord(w, target.area));
+
+  const domainName = nameInDomain(target, page.url);
   if (domainName) evidence.push(`the domain contains its name ("${domainName}")`);
 
-  return { strong: phoneOnPage || (name && Boolean(street || domainName)), name, evidence };
+  return {
+    strong: phoneOnPage || (name && Boolean(street || domainName)),
+    phone: phoneOnPage,
+    name,
+    local,
+    ownDomain: domainName !== null,
+    evidence,
+  };
 }
 
-// Sites that list businesses rather than being one.
-const NOT_OWN_SITE = [
-  "google.", "goo.gl", "bing.com", "yelp.", "tripadvisor.", "foursquare.com", "booking.com", "wikipedia.org",
-  "wikimapia.org", "mapcarta.com", "waze.com", "apple.com", "linkedin.com", "twitter.com", "x.com", "youtube.com",
-  "cylex", "yellowpages", "opendi", "infobel", "kompass", "hotfrog", "zoomaal", "openstreetmap.org",
+/**
+ * The part of the lead's name its URL's domain is made of, if any: a
+ * distinctive word of it ("arberi" in arberi.al), or, for a name whose own
+ * words are short, the whole name run together (studiodentareaa.com).
+ */
+function nameInDomain(target: CheckTarget, url: string): string | null {
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/[^a-z0-9]/g, "");
+  } catch {
+    return null;
+  }
+  const tokens = significantTokens(target.name, target.area).map((t) => t.replace(/[^a-z0-9]/g, ""));
+  if (tokens.length > 0) return tokens.find((t) => t.length >= 4 && host.includes(t)) ?? null;
+  if (ownWords(target.name, target.area).length === 0) return null; // "klinikedentare.com" is anyone's
+  const whole = normalize(target.name).replace(/[^a-z0-9]/g, "");
+  return whole.length >= 8 && host.includes(whole) ? whole : null;
+}
+
+// Sites that list businesses rather than being one, by domain (and its subdomains)...
+const DIRECTORY_DOMAINS = [
+  "goo.gl", "bing.com", "foursquare.com", "booking.com", "wikipedia.org", "wikimapia.org", "mapcarta.com", "waze.com",
+  "apple.com", "linkedin.com", "twitter.com", "x.com", "youtube.com", "openstreetmap.org",
+  // Seen in live Groq searches for Tirana dentists: each lists the business's phone and street.
+  "exa.ai", "geoview.info", "gjirafa.biz", "pikark.com", "dentists10.com", "near-place.com", "albaniayp.com",
+  "maps24.net", "openalfa.com", "supernet.al", "dentaltourismalbania.com", "on-mend.com",
 ];
+// ...and by a word in the host name.
+const DIRECTORY_WORDS = ["google.", "yelp.", "tripadvisor.", "cylex", "yellowpages", "opendi", "infobel", "kompass", "hotfrog", "zoomaal"];
 
 /** Whether a search result could be the business's own site. */
 export function couldBeOwnSite(url: string): boolean {
@@ -293,7 +350,8 @@ export function couldBeOwnSite(url: string): boolean {
     return false;
   }
   if (!websiteNeedsFetch(url)) return false; // social pages, retired Google sites
-  return !NOT_OWN_SITE.some((d) => host.includes(d));
+  if (DIRECTORY_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`))) return false;
+  return !DIRECTORY_WORDS.some((w) => host.includes(w));
 }
 
 const MAX_CANDIDATES = 5;
@@ -303,25 +361,55 @@ export interface CheckDeps {
   fetchPage?: (url: URL) => Promise<FetchedPage>;
 }
 
-/** Searches for the lead's own site and verifies each candidate page. */
+/**
+ * Searches for the lead's own site and verifies each candidate page. Only a
+ * page on a domain made of the lead's name can be "found", and only with its
+ * phone, or its name and its street or area: directory listings carry a
+ * business's phone, name and street too, and no list of directories is ever
+ * complete, while another business elsewhere can share the name (MonDent in
+ * Tirana, mondent.ba in Bosnia). Anything less is "unsure", for a person to
+ * look at: a strong match elsewhere first, then a site named after the lead
+ * that didn't load, then a page with its name and its street or area.
+ */
 export async function checkLeadOnline(target: CheckTarget, deps: CheckDeps): Promise<CheckResult> {
   const fetchPage = deps.fetchPage ?? ((url: URL) => safeFetchPage(url));
-  const candidates = [...new Set((await deps.provider.search(target)).filter(couldBeOwnSite))].slice(0, MAX_CANDIDATES);
+  const urls = [...new Set((await deps.provider.search(target)).filter(couldBeOwnSite))];
+  // Domains made of the name first: they are the likeliest own sites.
+  const candidates = [...urls.filter((u) => nameInDomain(target, u)), ...urls.filter((u) => !nameInDomain(target, u))].slice(0, MAX_CANDIDATES);
 
+  let closeCall: CheckResult | null = null;
+  let deadNamesake: CheckResult | null = null;
   let maybe: CheckResult | null = null;
   for (const candidate of candidates) {
-    let page: FetchedPage;
+    let page: FetchedPage | null = null;
     try {
       page = await fetchPage(new URL(candidate));
     } catch {
-      continue; // unreachable or refused: not evidence either way
+      // Unreachable or refused: not evidence either way.
     }
-    if (page.status >= 400 || !page.isHtml) continue;
+    if (!page || page.status >= 400 || !page.isHtml) {
+      const named = nameInDomain(target, candidate);
+      if (named && !deadNamesake) {
+        const evidence = [`a site named after it (${new URL(candidate).hostname}) didn't load; it may be its old site`];
+        deadNamesake = { verdict: "unsure", url: candidate, evidence };
+      }
+      continue;
+    }
     const match = matchPage(target, { url: page.finalUrl, html: page.body });
-    if (match.strong) return { verdict: "found", url: page.finalUrl, evidence: match.evidence };
-    if (match.name && !maybe) maybe = { verdict: "unsure", url: page.finalUrl, evidence: match.evidence };
+    if (match.ownDomain && (match.phone || (match.name && match.local))) {
+      return { verdict: "found", url: page.finalUrl, evidence: match.evidence };
+    }
+    if (match.strong && !closeCall) {
+      const why = match.ownDomain
+        ? `but the page mentions neither its street nor ${target.area}, so it may be another business with this name`
+        : "but the domain isn't its name, so this may be a listing";
+      closeCall = { verdict: "unsure", url: page.finalUrl, evidence: [...match.evidence, why] };
+    }
+    // The name alone, with no sign of the street or area, is likely a namesake elsewhere.
+    if (match.name && match.local && !maybe) maybe = { verdict: "unsure", url: page.finalUrl, evidence: match.evidence };
   }
-  if (maybe) return maybe;
+  const best = closeCall ?? deadNamesake ?? maybe;
+  if (best) return best;
   return {
     verdict: "none",
     url: null,
@@ -416,10 +504,15 @@ export interface RunDeps extends Partial<CheckDeps> {
   now?: () => Date;
 }
 
+const BUSY_RETRIES = 3;
+const BUSY_WAIT_MS = 20_000;
+const MAX_BUSY_WAIT_MS = 65_000;
+
 /**
  * Checks a campaign's offline-looking leads one at a time, so a free search
- * plan's per-minute limit is respected. A busy provider is retried once after
- * a pause; if it is still busy, or the search fails another way, the run stops
+ * plan's per-minute limit is respected. A busy search is retried up to three
+ * times, each after the wait the provider asked for (20 seconds if it didn't
+ * say); if it is still busy, or the search fails another way, the run stops
  * and says why, and the verdicts so far are kept.
  */
 export async function runOnlineCheck(prisma: PrismaClient, campaignId: string, limit = DEFAULT_CHECK_LIMIT, deps: RunDeps = {}) {
@@ -439,13 +532,15 @@ export async function runOnlineCheck(prisma: PrismaClient, campaignId: string, l
     progress.total = leads.length;
     for (const lead of leads) {
       const target = { name: lead.name, phone: lead.phone, address: lead.address, niche: lead.campaign.niche, area: lead.campaign.region };
-      let result: CheckResult;
-      try {
-        result = await checkLeadOnline(target, { provider, fetchPage: deps.fetchPage });
-      } catch (err) {
-        if (!(err instanceof SearchError && err.busy)) throw err;
-        await sleep(20_000);
-        result = await checkLeadOnline(target, { provider, fetchPage: deps.fetchPage });
+      let result: CheckResult | null = null;
+      for (let attempt = 0; !result; attempt++) {
+        try {
+          result = await checkLeadOnline(target, { provider, fetchPage: deps.fetchPage });
+        } catch (err) {
+          if (!(err instanceof SearchError && err.busy) || attempt === BUSY_RETRIES) throw err;
+          // Wait as long as the provider asked, within reason; Groq's free plan asks for seconds.
+          await sleep(Math.min(Math.max(err.retryAfterMs ?? BUSY_WAIT_MS, 1_000), MAX_BUSY_WAIT_MS));
+        }
       }
       await applyVerdict(prisma, lead.id, result, now());
       progress.done++;
