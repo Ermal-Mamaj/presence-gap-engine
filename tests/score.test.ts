@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Certainty, DetectedSignal } from "@/lib/detect";
-import { computeScore, explainScore, MAX_SCORE } from "@/lib/score";
+import { computeScore, explainScore, gapContributions, MAX_SCORE } from "@/lib/score";
 
 const sig = (key: string, severity: number, certainty: Certainty = "VERIFIED"): DetectedSignal => ({
   key,
@@ -45,6 +45,18 @@ describe("computeScore: baseline behaviour", () => {
     const viable = computeScore(NO_WEBSITE, { rating: 4.5, reviewCount: 80, phone: "1" });
     const unproven = computeScore(NO_WEBSITE, { reviewCount: 0, rating: 0 });
     expect(viable).toBeGreaterThan(unproven);
+  });
+});
+
+describe("gapContributions", () => {
+  it("gives each counting signal its share, uncertain ones at half, and adds up to gapPoints", () => {
+    const signals = [sig("no_mobile_viewport", 15), sig("site_unreachable", 35, "UNCERTAIN"), sig("site_not_checked", 0)];
+    const parts = gapContributions(signals);
+    expect(parts.map((p) => [p.signal.key, p.points])).toEqual([
+      ["no_mobile_viewport", 15],
+      ["site_unreachable", 17.5],
+    ]);
+    expect(parts.reduce((s, p) => s + p.points, 0)).toBe(explainScore(signals, {}).gapPoints);
   });
 });
 

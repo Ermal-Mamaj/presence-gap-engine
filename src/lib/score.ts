@@ -60,10 +60,7 @@ function isKnownNumber(value: number | null | undefined): value is number {
  * an empty listing either. A reported 0 reviews / unrated listing is.
  */
 export function explainScore(signals: DetectedSignal[], business: ScorableBusiness): ScoreBreakdown {
-  const gapPoints = signals.reduce((sum, s) => {
-    if (!isKnownNumber(s.severity) || s.severity <= 0) return sum;
-    return sum + s.severity * (s.certainty === "UNCERTAIN" ? UNCERTAIN_WEIGHT : 1);
-  }, 0);
+  const gapPoints = gapContributions(signals).reduce((sum, c) => sum + c.points, 0);
 
   const reviewCount = isKnownNumber(business.reviewCount) && business.reviewCount >= 0 ? business.reviewCount : null;
   // A rating outside 0-5 is corrupt data; ignore it rather than reward it.
@@ -100,6 +97,20 @@ export function explainScore(signals: DetectedSignal[], business: ScorableBusine
     viabilityMultiplier,
     score,
   };
+}
+
+/**
+ * What each signal adds to gapPoints, in the order given. Signals that add
+ * nothing (zero or invalid severity) are left out. explainScore sums these, so
+ * a breakdown shown from them always adds up to the real score.
+ */
+export function gapContributions(signals: DetectedSignal[]): { signal: DetectedSignal; points: number }[] {
+  return signals
+    .filter((s) => isKnownNumber(s.severity) && s.severity > 0)
+    .map((signal) => ({
+      signal,
+      points: signal.severity * (signal.certainty === "UNCERTAIN" ? UNCERTAIN_WEIGHT : 1),
+    }));
 }
 
 export function computeScore(signals: DetectedSignal[], business: ScorableBusiness): number {

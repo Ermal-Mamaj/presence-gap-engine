@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { normalizeEmail, normalizePhone } from "@/lib/contacts";
+import { type ContactChannel, normalizeEmail, normalizePhone } from "@/lib/contacts";
 import { canTransition, CRM_STAGES, isCrmStage } from "@/lib/crm";
 import {
   CHANNEL_LABEL,
@@ -14,7 +14,8 @@ import {
   isDraftChannel,
   isDraftLanguage,
 } from "@/lib/outreachOptions";
-import type { WebsiteStatus } from "@/lib/detect";
+import type { DetectedSignal, WebsiteStatus } from "@/lib/detect";
+import { explainScore, gapContributions, UNCERTAIN_WEIGHT } from "@/lib/score";
 import {
   formatTimestamp,
   WEBSITE_STATUS_HINT,
@@ -69,6 +70,79 @@ interface Business {
   outreach: Outreach[];
   stageChanges: StageChange[];
   campaign: { id: string; name: string; region: string; language: string };
+}
+
+const CHANNEL_NAMES: Record<ContactChannel, string> = { phone: "phone", email: "email", social: "social profile" };
+
+const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0$/, ""));
+
+/**
+ * Why the lead scored what it did, term by term, from the same function that
+ * computed it. If the weights changed since the last scan, the stored score
+ * and this recomputation differ, and the panel says so instead of hiding it.
+ */
+function ScoreExplanation({ business }: { business: Business }) {
+  // Stored certainty is a plain string; only an explicit UNCERTAIN is uncertain.
+  const signals: DetectedSignal[] = business.signals.map((s) => ({
+    key: s.key,
+    label: s.label,
+    severity: s.severity,
+    certainty: s.certainty === "UNCERTAIN" ? "UNCERTAIN" : "VERIFIED",
+  }));
+  const b = explainScore(signals, business);
+  const gaps = gapContributions(signals);
+  const credits = [
+    b.reviewCredit > 0 && `reviews +${fmt(b.reviewCredit)}`,
+    b.ratingCredit > 0 && `rating +${fmt(b.ratingCredit)}`,
+    b.contactCredit > 0 && `${b.channels.map((c) => CHANNEL_NAMES[c]).join(", ")} +${fmt(b.contactCredit)}`,
+  ].filter(Boolean);
+
+  return (
+    <section className="mt-6">
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Why this score</h2>
+      {gaps.length === 0 ? (
+        <p className="mt-2 text-sm text-zinc-500">No gap that counts was found, so the score is 0 however strong the business looks.</p>
+      ) : (
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm text-zinc-700 dark:text-zinc-300">
+          <dt className="text-zinc-500">Gap points</dt>
+          <dd>
+            <span className="font-mono">{fmt(b.gapPoints)}</span>
+            <span className="text-zinc-500">
+              {" "}
+              ={" "}
+              {gaps
+                .map(({ signal, points }) =>
+                  signal.certainty === "UNCERTAIN"
+                    ? `${signal.label} ${signal.severity} × ${UNCERTAIN_WEIGHT} (unverified)`
+                    : `${signal.label} ${fmt(points)}`
+                )
+                .join(" + ")}
+            </span>
+          </dd>
+          <dt className="text-zinc-500">Viability</dt>
+          <dd>
+            <span className="font-mono">× {fmt(b.viabilityMultiplier)}</span>
+            <span className="text-zinc-500">
+              {" "}
+              = 1{credits.length ? ` + ${credits.join(" + ")}` : " (nothing known about reviews, rating or contact)"}
+              {b.ghostPenaltyApplied && ", halved: the listing reports no reviews and there is no way to reach it"}
+            </span>
+          </dd>
+          <dt className="text-zinc-500">Score</dt>
+          <dd>
+            <span className="font-mono">{fmt(b.score)}</span>
+            {b.score >= 100 && <span className="text-zinc-500"> (capped at 100)</span>}
+          </dd>
+        </dl>
+      )}
+      {Math.abs(b.score - business.score) > 0.005 && (
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+          The stored score is {business.score.toFixed(1)}, from weights that have changed since this lead was scored. Use
+          Recalculate scores on the campaign page to update it.
+        </p>
+      )}
+    </section>
+  );
 }
 
 /** Drafts made before channels existed are stored as "email", which is what they were. */
@@ -390,6 +464,8 @@ export default function LeadDetailPage() {
             </ul>
           )}
         </section>
+
+        <ScoreExplanation business={business} />
 
         <section className="mt-8">
           <div className="flex items-center justify-between">
