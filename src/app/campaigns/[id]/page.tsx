@@ -52,6 +52,7 @@ interface Business {
   websiteStatus: WebsiteStatus;
   lastSeenAt: string;
   followUpAt: string | null;
+  _count: { outreach: number };
   signals: GapSignal[];
 }
 
@@ -110,6 +111,7 @@ export default function CampaignDetailPage() {
   const [running, setRunning] = useState(false);
   const [rescoring, setRescoring] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [bulkDrafting, setBulkDrafting] = useState(false);
   const [rescoreNotice, setRescoreNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -211,6 +213,35 @@ export default function CampaignDetailPage() {
       await load();
     } finally {
       setRunning(false);
+    }
+  }
+
+  /** Drafts the best leads that are ready for a first message; see draftTopLeads. */
+  async function handleBulkDraft() {
+    setBulkDrafting(true);
+    setError(null);
+    setRescoreNotice(null);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/drafts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 10 }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? "Could not draft");
+      const parts = [
+        data.selected === 0
+          ? "No lead is ready for a first draft: each needs a verified gap, no draft yet, and stage NEW or QUALIFIED."
+          : `Drafted ${data.drafted} of ${data.selected}.`,
+        data.failed.length ? `${data.failed.length} failed (${data.failed[0].name}: ${data.failed[0].error}).` : "",
+        data.stoppedBecause ? `Stopped: ${data.stoppedBecause}` : "",
+      ];
+      setRescoreNotice(parts.filter(Boolean).join(" "));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setBulkDrafting(false);
     }
   }
 
@@ -430,12 +461,21 @@ export default function CampaignDetailPage() {
 
               {rescoreNotice && <span className="text-xs text-zinc-500 dark:text-zinc-400">{rescoreNotice}</span>}
 
+              <button
+                onClick={handleBulkDraft}
+                disabled={bulkDrafting || scanning}
+                title="Drafts the 10 highest-scoring leads that have a verified gap, no draft yet, and stage NEW or QUALIFIED, in the campaign's language. Takes about a minute."
+                className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              >
+                {bulkDrafting ? "Drafting…" : "Draft top 10"}
+              </button>
+
               {/* A scan rewrites every score anyway, so this only matters between scans. */}
               <button
                 onClick={handleRescore}
                 disabled={rescoring || scanning}
                 title="Recomputes every score from the gaps already found. No website is checked again."
-                className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
               >
                 {rescoring ? "Recalculating…" : "Recalculate scores"}
               </button>
@@ -554,6 +594,9 @@ export default function CampaignDetailPage() {
                         {b.crmStage}
                       </span>
                       {b.followUpAt && <FollowUpNote day={followUpDay(b.followUpAt)} />}
+                      {b._count.outreach > 0 && (b.crmStage === "NEW" || b.crmStage === "QUALIFIED") && (
+                        <p className="mt-1 whitespace-nowrap text-xs text-sky-700 dark:text-sky-400">Draft ready</p>
+                      )}
                     </td>
                   </tr>
                 ))}
