@@ -156,10 +156,34 @@ model Outreach {
   body       String
   openLine   String
   sentAt     DateTime? // when this draft was actually sent; null = not sent
+  // The template it was filled from; null for an AI draft or a deleted template.
+  templateId String?
+  template   MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
   createdAt  DateTime @default(now())
 
   @@index([businessId])
+  @@index([templateId])
+}
+
+// A message written by a person, filled in by code for each lead. Several for
+// the same language, channel and gap are variants of one another, rotated so
+// neighbouring businesses don't all get the same text. See src/lib/templates.ts.
+model MessageTemplate {
+  id        String   @id @default(cuid())
+  language  String   // a DRAFT_LANGUAGES key, see src/lib/outreachOptions.ts
+  channel   String   // email | phone | message
+  gapKey    String   // the verified gap it is written for, e.g. "no_website"
+  niche     String?  // only for this business type; null = any
+  subject   String?  // email subject, or a title for a call script or message
+  body      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  outreach  Outreach[]
+
+  @@index([language, channel, gapKey])
 }
 
 model StageChange {
