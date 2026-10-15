@@ -188,7 +188,7 @@ describe("markOutreachSent and dueFollowUps", () => {
 
   it("records the send, moves a new lead to CONTACTED, and plans a follow-up three days on", async () => {
     const { lead, draft } = await leadWithDraft();
-    const { outreach, business } = await markOutreachSent(prisma, draft.id, NOW);
+    const { outreach, business } = await markOutreachSent(prisma, draft.id, { now: NOW });
     expect(outreach.sentAt).toEqual(NOW);
     expect(business.crmStage).toBe("CONTACTED");
     expect(followUpDay(business.followUpAt!)).toBe("2026-10-17");
@@ -199,15 +199,15 @@ describe("markOutreachSent and dueFollowUps", () => {
   it("leaves a lead that is further along, and a follow-up already planned, as they are", async () => {
     const planned = parseFollowUpDay("2026-10-20")!;
     const { lead, draft } = await leadWithDraft({ crmStage: "REPLIED", followUpAt: planned });
-    const { business } = await markOutreachSent(prisma, draft.id, NOW);
+    const { business } = await markOutreachSent(prisma, draft.id, { now: NOW });
     expect(business).toMatchObject({ crmStage: "REPLIED", followUpAt: planned });
     expect(await prisma.stageChange.count({ where: { businessId: lead.id } })).toBe(0);
   });
 
   it("keeps the first send time when a draft is marked sent twice", async () => {
     const { draft } = await leadWithDraft();
-    await markOutreachSent(prisma, draft.id, NOW);
-    const { outreach } = await markOutreachSent(prisma, draft.id, new Date("2026-10-20T09:00:00.000Z"));
+    await markOutreachSent(prisma, draft.id, { now: NOW });
+    const { outreach } = await markOutreachSent(prisma, draft.id, { now: new Date("2026-10-20T09:00:00.000Z") });
     expect(outreach.sentAt).toEqual(NOW);
   });
 
@@ -228,5 +228,36 @@ describe("markOutreachSent and dueFollowUps", () => {
 
     const due = (await dueFollowUps(prisma, day("2026-10-14"))).filter((b) => b.campaign.id === campaign.id);
     expect(due.map((b) => b.name)).toEqual(["overdue", "due today"]);
+  });
+});
+
+describe("markOutreachSent: races and days", () => {
+  const db = createTestDb();
+  const { prisma } = db;
+  afterAll(() => db.cleanup());
+
+  async function draftOnNewLead() {
+    const campaign = await prisma.campaign.create({ data: { name: "c", region: "r", niche: "n" } });
+    const lead = await prisma.business.create({ data: { campaignId: campaign.id, name: "L", dedupeKey: `k${Math.random()}` } });
+    return prisma.outreach.create({ data: { businessId: lead.id, subject: "s", openLine: "o", body: "b" } });
+  }
+
+  it("records one send and one stage move when marked twice at once", async () => {
+    const draft = await draftOnNewLead();
+    await Promise.all([markOutreachSent(prisma, draft.id), markOutreachSent(prisma, draft.id)]);
+    expect(await prisma.stageChange.count({ where: { businessId: draft.businessId } })).toBe(1);
+    expect((await prisma.business.findUniqueOrThrow({ where: { id: draft.businessId } })).crmStage).toBe("CONTACTED");
+  });
+
+  it("plans the follow-up from the user's day when given", async () => {
+    const draft = await draftOnNewLead();
+    // 23:00 UTC on the 14th is already the 15th in Tirana.
+    const { business } = await markOutreachSent(prisma, draft.id, { now: new Date("2026-10-14T23:00:00Z"), today: "2026-10-15" });
+    expect(followUpDay(business.followUpAt!)).toBe("2026-10-18");
+  });
+
+  it("rejects a year no one meant, as a date input produces while the year is typed", () => {
+    expect(parseFollowUpDay("0202-10-17")).toBeNull();
+    expect(parseFollowUpDay("2027-10-17")).not.toBeNull();
   });
 });

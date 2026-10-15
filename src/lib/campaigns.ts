@@ -14,9 +14,12 @@ export type CampaignUpdate = z.infer<typeof campaignUpdateSchema>;
 
 /** Renames a campaign or changes the language its drafts are written in. Leads are untouched. */
 export async function updateCampaign(prisma: PrismaClient, id: string, update: CampaignUpdate) {
-  const result = await prisma.campaign.updateMany({ where: { id }, data: update });
-  if (result.count === 0) throw new CampaignNotFoundError();
-  return prisma.campaign.findUniqueOrThrow({ where: { id } });
+  const current = await prisma.campaign.findUnique({ where: { id }, select: { updatedAt: true } });
+  if (!current) throw new CampaignNotFoundError();
+  // updatedAt is the scan claim's heartbeat (see claimCampaignScan). A rename
+  // is not scan progress, so it keeps the old value: otherwise editing a
+  // campaign whose scan crashed would postpone its recovery by 15 minutes.
+  return prisma.campaign.update({ where: { id }, data: { ...update, updatedAt: current.updatedAt } });
 }
 
 /**

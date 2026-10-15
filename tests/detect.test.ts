@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { analyzePresence, deferWebsiteCheck, detectGaps, detectStaleness } from "@/lib/detect";
+import { analyzePresence, deferWebsiteCheck, detectGaps, detectStaleness, websiteNeedsFetch } from "@/lib/detect";
 import { SafeFetchError, type FetchedPage } from "@/lib/safeFetch";
 
 const GOOD_HTML =
@@ -377,5 +377,35 @@ describe("analyzePresence: more page checks", () => {
     expect((await analyzePresence({ ...site, phone }, deps(async () => page({ body: linked })))).signals).toEqual([]);
     const cut = await analyzePresence({ ...site, phone }, deps(async () => page({ truncated: true })));
     expect(keys(cut.signals)).not.toContain("no_tap_to_call");
+  });
+});
+
+describe("analyzePresence: pages that are not the business's own", () => {
+  it("reads no contacts from a parked page, whose mailto: belongs to the domain seller", async () => {
+    const body = '<html><body>This domain is for sale. <a href="mailto:sales@broker.example">Contact</a></body></html>';
+    const result = await analyzePresence({ website: "https://example.com" }, deps(async () => page({ body })));
+    expect(keys(result.signals)).toEqual(["site_parked"]);
+    expect(result.contacts).toBeUndefined();
+  });
+
+  it("treats a site that redirects to a social page as social-only, and reads nothing from it", async () => {
+    const body = '<html><head></head><body><a href="mailto:noreply@facebook.example">x</a></body></html>';
+    const result = await analyzePresence(
+      { website: "mybiz.al", phone: "+355 69 1" },
+      deps(async () => page({ body, finalUrl: "https://www.facebook.com/mybiz" }))
+    );
+    expect(keys(result.signals)).toEqual(["social_only"]);
+    expect(result.websiteStatus).toBe("NONE_FOUND");
+    expect(result.contacts).toBeUndefined();
+  });
+});
+
+describe("websiteNeedsFetch", () => {
+  it("is false for nothing, a social page or a retired site, and true for a real site", () => {
+    expect(websiteNeedsFetch(null)).toBe(false);
+    expect(websiteNeedsFetch("  ")).toBe(false);
+    expect(websiteNeedsFetch("https://www.facebook.com/x")).toBe(false);
+    expect(websiteNeedsFetch("klinika.business.site")).toBe(false);
+    expect(websiteNeedsFetch("klinika.al")).toBe(true);
   });
 });

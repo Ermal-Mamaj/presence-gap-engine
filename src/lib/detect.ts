@@ -75,6 +75,16 @@ function websiteHost(website: string): string | null {
   }
 }
 
+/**
+ * Whether checking this website means a request. Social and retired sites
+ * are settled from the URL alone, so they shouldn't use up a scan's limited
+ * website checks.
+ */
+export function websiteNeedsFetch(website: string | null | undefined): boolean {
+  const value = website?.trim();
+  return Boolean(value) && noOwnSite(value!) === null;
+}
+
 /** A signal for a listing whose website is not really one, or null when it is worth fetching. */
 function noOwnSite(website: string): DetectedSignal | null {
   const host = websiteHost(website);
@@ -361,9 +371,16 @@ export async function analyzePresence(
   } else {
     try {
       const page = await fetchWebsite(parseWebsiteUrl(website), fetchPage);
-      signals.push(...analyzePage(page, currentYear, business));
-      // An error page is the host's, not the business's; only read a real page.
-      if (page.status < 400 && page.isHtml) contacts = extractSiteContacts(page.body);
+      // A site that redirects to a social page is no site of its own either,
+      // and the social page's markup is not the business's to judge.
+      const landedOn = noOwnSite(page.finalUrl);
+      const pageSignals = landedOn ? [landedOn] : analyzePage(page, currentYear, business);
+      signals.push(...pageSignals);
+      // Only the business's own real page is read for contacts: not an error
+      // page (the host's), a parked page (the registrar's, whose mailto: would
+      // be the domain broker's), or a social page it redirected to.
+      const ownPage = !landedOn && !pageSignals.some((s) => s.key === "site_parked");
+      if (ownPage && page.status < 400 && page.isHtml) contacts = extractSiteContacts(page.body);
     } catch (err) {
       signals.push(classifyFailure(toFetchError(err)));
     }

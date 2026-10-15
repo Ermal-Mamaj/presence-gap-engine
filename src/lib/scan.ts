@@ -5,6 +5,7 @@ import {
   analyzePresence,
   deferWebsiteCheck,
   fromStoredSignal,
+  websiteNeedsFetch,
   type DetectableBusiness,
   type PresenceAnalysis,
 } from "./detect";
@@ -282,7 +283,9 @@ export async function executeCampaignScan(
       const listing = mergeWithExisting(raw, existing);
       return { dedupeKey, raw, existing, listing, website: listing.website?.trim() || undefined };
     });
-    const withWebsite = entries.filter((e) => e.website);
+    // Only websites that cost a request count against the limit; a social
+    // page or a retired site is settled from its URL.
+    const withWebsite = entries.filter((e) => websiteNeedsFetch(e.website));
     const limit = deps.maxWebsiteChecks ?? DEFAULT_MAX_WEBSITE_CHECKS;
     const toCheck = selectWebsiteChecks(
       withWebsite.map((e) => ({ dedupeKey: e.dedupeKey, website: e.listing.website, existing: e.existing })),
@@ -294,7 +297,7 @@ export async function executeCampaignScan(
       entries,
       deps.concurrency ?? DEFAULT_CONCURRENCY,
       async ({ dedupeKey, raw, existing, listing, website }): Promise<PreparedLead> => {
-        const checkNow = Boolean(website) && toCheck.has(dedupeKey);
+        const checkNow = Boolean(website) && (toCheck.has(dedupeKey) || !websiteNeedsFetch(website));
         let analysis: PresenceAnalysis;
         let keepSignals = false;
         if (!website || checkNow) {
@@ -322,9 +325,11 @@ export async function executeCampaignScan(
             score: computeScore(analysis.signals, merged),
             websiteStatus: analysis.websiteStatus,
             lastSeenAt: now(),
-            // Describes the current website: set when it is fetched, cleared
-            // when there is none, untouched when its check is deferred.
-            ...(checkNow ? { siteCheckedAt: now() } : website ? {} : { siteCheckedAt: null }),
+            // Describes the current website: set when it is assessed, kept when
+            // its earlier assessment stands, and cleared otherwise, including a
+            // changed website whose check is deferred, so the next scan sees it
+            // as never checked and takes it first.
+            ...(checkNow ? { siteCheckedAt: now() } : keepSignals ? {} : { siteCheckedAt: null }),
           },
         };
       }

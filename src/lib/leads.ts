@@ -30,6 +30,10 @@ export class OutreachNotFoundError extends Error {
  */
 export function parseFollowUpDay(day: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  // A date input reports each year as it is typed (0002, 0020, 0202, 2027);
+  // only a plausible year is a follow-up anyone meant.
+  const year = Number(day.slice(0, 4));
+  if (year < 2000 || year > 2100) return null;
   const date = new Date(`${day}T00:00:00.000Z`);
   return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== day ? null : date;
 }
@@ -103,31 +107,39 @@ export async function updateLead(prisma: PrismaClient, id: string, update: LeadU
  * FOLLOW_UP_AFTER_DAYS later unless one is already planned. Marking a draft
  * sent twice keeps the first time, so the record can't drift.
  */
-export async function markOutreachSent(prisma: PrismaClient, outreachId: string, now: Date = new Date()) {
+export async function markOutreachSent(
+  prisma: PrismaClient,
+  outreachId: string,
+  options: { now?: Date; today?: string } = {}
+) {
+  const now = options.now ?? new Date();
+  // The day it was sent where the user is; the server's UTC day can be a day
+  // off around midnight. Falls back to UTC when the caller didn't say.
+  const sentDay = (options.today && parseFollowUpDay(options.today)) || parseFollowUpDay(followUpDay(now))!;
+  const followUp = new Date(sentDay);
+  followUp.setUTCDate(followUp.getUTCDate() + FOLLOW_UP_AFTER_DAYS);
+
   return prisma.$transaction(async (tx) => {
     const outreach = await tx.outreach.findUnique({ where: { id: outreachId }, include: { business: true } });
     if (!outreach) throw new OutreachNotFoundError();
-
-    const sent = outreach.sentAt
-      ? outreach
-      : await tx.outreach.update({ where: { id: outreachId }, data: { sentAt: now } });
-
     const lead = outreach.business;
-    const notYetContacted = lead.crmStage === "NEW" || lead.crmStage === "QUALIFIED";
-    const followUp = new Date(`${followUpDay(now)}T00:00:00.000Z`);
-    followUp.setUTCDate(followUp.getUTCDate() + FOLLOW_UP_AFTER_DAYS);
 
-    const business = await tx.business.update({
-      where: { id: lead.id },
-      data: {
-        ...(notYetContacted ? { crmStage: "CONTACTED" } : {}),
-        ...(lead.followUpAt ? {} : { followUpAt: followUp }),
-      },
+    // Each write is conditional on the state it changes, so two marks racing
+    // (a double click) record one send, one stage move and one history row.
+    await tx.outreach.updateMany({ where: { id: outreachId, sentAt: null }, data: { sentAt: now } });
+    const moved = await tx.business.updateMany({
+      where: { id: lead.id, crmStage: { in: ["NEW", "QUALIFIED"] } },
+      data: { crmStage: "CONTACTED" },
     });
-    if (notYetContacted) {
+    if (moved.count === 1) {
       await tx.stageChange.create({ data: { businessId: lead.id, fromStage: lead.crmStage, toStage: "CONTACTED" } });
     }
-    return { outreach: sent, business };
+    await tx.business.updateMany({ where: { id: lead.id, followUpAt: null }, data: { followUpAt: followUp } });
+
+    return {
+      outreach: await tx.outreach.findUniqueOrThrow({ where: { id: outreachId } }),
+      business: await tx.business.findUniqueOrThrow({ where: { id: lead.id } }),
+    };
   });
 }
 
