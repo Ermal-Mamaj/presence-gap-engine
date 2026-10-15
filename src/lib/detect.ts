@@ -113,7 +113,7 @@ function noOwnSite(website: string): DetectedSignal | null {
 // Phrases a parking or domain-sale page uses; specific enough that a real
 // business page doesn't contain them by accident.
 const PARKED =
-  /this domain (?:name )?(?:is|may be) for sale|buy this domain|domain (?:is )?parked|parked free|parkingcrew|sedoparking|afternic\.com|dan\.com\/buy-domain/i;
+  /this domain (?:name )?(?:is|may be) for sale|buy this domain|domain (?:is )?parked|parked free|parkingcrew|sedoparking/i;
 
 const RETRYABLE_KINDS = new Set(["timeout", "connection"]);
 

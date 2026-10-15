@@ -133,6 +133,9 @@ function mergeWithExisting(raw: RawBusiness, existing: Business | undefined, sit
     address: raw.address ?? existing?.address ?? undefined,
     phone: raw.phone ?? site.phone ?? existing?.phone ?? undefined,
     email: raw.email ?? site.email ?? existing?.email ?? undefined,
+    // A site's first mailto: can be a web agency's footer credit, so an email
+    // taken from it is marked, and the UI asks for a glance before sending.
+    emailFromSite: raw.email ? false : site.email ? true : (existing?.emailFromSite ?? false),
     facebook: raw.facebook ?? existing?.facebook ?? undefined,
     instagram: raw.instagram ?? existing?.instagram ?? undefined,
     website: raw.website ?? existing?.website ?? undefined,

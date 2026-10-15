@@ -233,3 +233,26 @@ describe("sharedGeocoder", () => {
     expect(sharedGeocoder()).toBe(sharedGeocoder());
   });
 });
+
+describe("fetchOverpass: what counts as too heavy", () => {
+  it("doesn't call a busy server's region too large when a deadline cut the round short", async () => {
+    let t = 0;
+    scriptedFetch([status(504), status(504)]);
+    const result = fetchOverpass("q", {
+      urls: [MAIN, MIRROR],
+      roundDelaysMs: [0, 15_000],
+      now: () => t,
+      // The pause overruns by 20s (a late timer), so round two's first attempt
+      // no longer fits the deadline and is never made.
+      sleep: async (ms) => void (t += ms + 20_000),
+      deadlineMs: 60_000,
+      attemptMs: 40_000,
+    });
+    // Nothing said "too heavy": both servers were busy, so that's what it reports.
+    await expect(result).rejects.toThrow(/Overpass API is busy/);
+  });
+
+  it("uses overpass.private.coffee as the second server by default", () => {
+    expect(new URL(overpassUrls()[1]).hostname).toBe("overpass.private.coffee");
+  });
+});

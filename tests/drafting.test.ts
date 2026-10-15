@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CrmStageName } from "@/lib/crm";
-import { draftForLead, draftTopLeads, MAX_BULK_DRAFTS } from "@/lib/drafting";
+import { BulkDraftInProgressError, draftForLead, draftTopLeads, MAX_BULK_DRAFTS } from "@/lib/drafting";
 import { OutreachError, type OutreachDeps } from "@/lib/outreach";
 import { createTestDb } from "./helpers/db";
 
@@ -107,5 +107,25 @@ describe("draftForLead", () => {
     const saved = await draftForLead(prisma, target, { channel: "phone", deps: { createMessage } });
     expect(saved.channel).toBe("phone");
     expect(createMessage.mock.calls[0][0]).toContain("phone call");
+  });
+});
+
+describe("draftTopLeads: one run per campaign at a time", () => {
+  it("refuses a second run while the first is still drafting, and allows one after", async () => {
+    await lead("slow", 60);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const createMessage = vi.fn<CreateMessage>(async () => {
+      await gate;
+      return { content: [{ type: "text", text: DRAFT }], stop_reason: "end_turn" };
+    });
+    const first = draftTopLeads(prisma, campaignId, { deps: { createMessage } });
+    await expect(draftTopLeads(prisma, campaignId, { deps: { createMessage } })).rejects.toBeInstanceOf(
+      BulkDraftInProgressError
+    );
+    release();
+    expect((await first).drafted).toBe(1);
+    // Finished, so the next run may start; nothing is left to draft.
+    expect(await draftTopLeads(prisma, campaignId, { deps: { createMessage } })).toMatchObject({ selected: 0 });
   });
 });

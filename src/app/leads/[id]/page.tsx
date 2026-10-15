@@ -59,6 +59,7 @@ interface Business {
   address: string | null;
   phone: string | null;
   email: string | null;
+  emailFromSite: boolean;
   facebook: string | null;
   instagram: string | null;
   website: string | null;
@@ -237,9 +238,15 @@ function ContactDetails({ business }: { business: Business }) {
           <span className="text-zinc-500 dark:text-zinc-400">{business.phone}</span>
         ))}
       {email && (
-        <a href={`mailto:${email}`} className={CONTACT_LINK_CLASS}>
-          {email}
-        </a>
+        <span>
+          <a href={`mailto:${email}`} className={CONTACT_LINK_CLASS}>
+            {email}
+          </a>
+          {/* The first mailto: on a site can be the web agency that built it. */}
+          {business.emailFromSite && (
+            <span className="ml-1 text-xs text-amber-700 dark:text-amber-400">from their website, check it is theirs</span>
+          )}
+        </span>
       )}
       {facebook && (
         <a href={facebook} target="_blank" rel="noreferrer" className={CONTACT_LINK_CLASS}>

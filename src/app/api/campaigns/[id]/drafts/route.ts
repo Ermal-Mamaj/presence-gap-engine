@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { draftTopLeads, MAX_BULK_DRAFTS } from "@/lib/drafting";
+import { BulkDraftInProgressError, draftTopLeads, MAX_BULK_DRAFTS } from "@/lib/drafting";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -18,7 +18,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const campaign = await prisma.campaign.findUnique({ where: { id }, select: { id: true } });
   if (!campaign) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
-  const outcome = await draftTopLeads(prisma, id, { limit: limit as number | undefined });
+  let outcome;
+  try {
+    outcome = await draftTopLeads(prisma, id, { limit: limit as number | undefined });
+  } catch (err) {
+    if (err instanceof BulkDraftInProgressError) return NextResponse.json({ error: err.message }, { status: 409 });
+    throw err;
+  }
   // Nothing drafted because no call could authenticate: say so as an error.
   if (outcome.stoppedBecause && outcome.drafted === 0) {
     return NextResponse.json({ ...outcome, error: outcome.stoppedBecause }, { status: 503 });

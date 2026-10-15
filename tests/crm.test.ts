@@ -261,3 +261,20 @@ describe("markOutreachSent: races and days", () => {
     expect(parseFollowUpDay("2027-10-17")).not.toBeNull();
   });
 });
+
+describe("markOutreachSent: the history row's starting stage", () => {
+  const db = createTestDb();
+  const { prisma } = db;
+  afterAll(() => db.cleanup());
+
+  it("records QUALIFIED -> CONTACTED for a qualified lead", async () => {
+    const campaign = await prisma.campaign.create({ data: { name: "c", region: "r", niche: "n" } });
+    const lead = await prisma.business.create({
+      data: { campaignId: campaign.id, name: "L", dedupeKey: "q1", crmStage: "QUALIFIED" },
+    });
+    const draft = await prisma.outreach.create({ data: { businessId: lead.id, subject: "s", openLine: "o", body: "b" } });
+    await markOutreachSent(prisma, draft.id);
+    const rows = await prisma.stageChange.findMany({ where: { businessId: lead.id } });
+    expect(rows).toEqual([expect.objectContaining({ fromStage: "QUALIFIED", toStage: "CONTACTED" })]);
+  });
+});

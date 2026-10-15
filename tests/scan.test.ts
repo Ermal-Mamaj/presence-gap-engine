@@ -740,3 +740,27 @@ describe("website checks that need no request", () => {
     expect(saved.every((b) => b.siteCheckedAt !== null)).toBe(true);
   });
 });
+
+describe("where an email came from", () => {
+  const siteSays = (email: string) => async (b: DetectableBusiness): Promise<PresenceAnalysis> => ({
+    ...(await fakeAnalyze(b)),
+    ...(b.website ? { contacts: { email } } : {}),
+  });
+
+  it("marks an email taken from the business's site, and not one from the listing", async () => {
+    await scan(campaignId, returning([biz(1, { website: "one.al" }), biz(2, { website: "two.al", email: "listed@two.al" })]), {
+      analyze: siteSays("agency@builder.example"),
+    });
+    const [one, two] = await leads(campaignId);
+    expect(one).toMatchObject({ email: "agency@builder.example", emailFromSite: true });
+    expect(two).toMatchObject({ email: "listed@two.al", emailFromSite: false });
+  });
+
+  it("keeps the mark on a remembered email, and drops it once the listing gives one", async () => {
+    await scan(campaignId, returning([biz(1, { website: "one.al" })]), { analyze: siteSays("site@one.al") });
+    await scan(campaignId, returning([biz(1, { website: "one.al" })]));
+    expect((await leads(campaignId))[0]).toMatchObject({ email: "site@one.al", emailFromSite: true });
+    await scan(campaignId, returning([biz(1, { website: "one.al", email: "owner@one.al" })]));
+    expect((await leads(campaignId))[0]).toMatchObject({ email: "owner@one.al", emailFromSite: false });
+  });
+});
