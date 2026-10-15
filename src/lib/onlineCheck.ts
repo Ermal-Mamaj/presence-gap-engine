@@ -36,7 +36,7 @@ export interface CheckTarget {
 // ---- Search providers ------------------------------------------------------
 
 export interface SearchProvider {
-  /** "groq", "tavily", or both in the order they're tried, e.g. "groq + tavily". */
+  /** "groq", "openrouter", "tavily", or several in the order they're tried, e.g. "groq + openrouter". */
   name: string;
   /** Candidate URLs for the business, best first. */
   search(target: CheckTarget): Promise<string[]>;
@@ -76,8 +76,8 @@ async function postJson(url: string, key: string, body: object, label: string): 
       const message = typeof parsed.error === "string" ? parsed.error : (parsed.error?.message ?? parsed.detail?.error);
       if (typeof message === "string") detail = message;
     } catch {}
-    // 429 is a rate limit; Tavily answers 432 and 433 when a plan's credits run out.
-    const limited = res.status === 429 || res.status === 432 || res.status === 433 || res.status >= 500;
+    // 429 is a rate limit; 402 (OpenRouter), 432 and 433 (Tavily) mean credits ran out.
+    const limited = [402, 429, 432, 433].includes(res.status) || res.status >= 500;
     const seconds = Number(res.headers.get("retry-after"));
     const retryAfterMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
     throw new SearchError(`${label} error ${res.status}: ${detail.slice(0, 200)}`, limited, retryAfterMs);
@@ -111,6 +111,22 @@ export function urlsIn(text: string): string[] {
   return [...text.matchAll(/https?:\/\/[^\s<>"'`)\]【】\\]+/g)].map((m) => m[0].replace(/[.,;:!?]+$/, ""));
 }
 
+/** What a model with web search is asked: the lead's facts, and URLs back. */
+function searchPrompt(target: CheckTarget): string {
+  const facts = [
+    `Name: ${target.name}`,
+    `Type: ${target.niche}`,
+    `Area: ${target.area}`,
+    target.address && `Address: ${target.address}`,
+    target.phone && `Phone: ${target.phone}`,
+  ].filter(Boolean);
+  return (
+    `Search the web for this business's own website.\n${facts.join("\n")}\n\n` +
+    "Reply with only the URLs of pages that could be its own website, one per line, best first. " +
+    "Leave out social media, maps, directories and review sites. If you find none, reply NONE."
+  );
+}
+
 /**
  * Groq's browser_search on a gpt-oss model. Groq returns the answer as prose
  * with citations rather than a list of results, so the model is asked for
@@ -121,13 +137,6 @@ export function groqProvider(key: string): SearchProvider {
   return {
     name: "groq",
     async search(target) {
-      const facts = [
-        `Name: ${target.name}`,
-        `Type: ${target.niche}`,
-        `Area: ${target.area}`,
-        target.address && `Address: ${target.address}`,
-        target.phone && `Phone: ${target.phone}`,
-      ].filter(Boolean);
       const data = (await postJson(
         "https://api.groq.com/openai/v1/chat/completions",
         key,
@@ -136,20 +145,48 @@ export function groqProvider(key: string): SearchProvider {
           tools: [{ type: "browser_search" }],
           tool_choice: "required",
           reasoning_effort: "low",
-          messages: [
-            {
-              role: "user",
-              content:
-                `Search the web for this business's own website.\n${facts.join("\n")}\n\n` +
-                "Reply with only the URLs of pages that could be its own website, one per line, best first. " +
-                "Leave out social media, maps, directories and review sites. If you find none, reply NONE.",
-            },
-          ],
+          messages: [{ role: "user", content: searchPrompt(target) }],
         },
         "Groq"
       )) as { choices?: { message?: { content?: string; executed_tools?: unknown } }[] };
       const message = data.choices?.[0]?.message;
       return [...urlsIn(message?.content ?? ""), ...urlsIn(JSON.stringify(message?.executed_tools ?? ""))];
+    },
+  };
+}
+
+/**
+ * OpenRouter's web plugin, on a free model: openrouter/free picks one that is
+ * up, since single free models come and go (set OPENROUTER_MODEL to choose).
+ * The search results come back as url_citation annotations, whatever the
+ * model says; the URLs the model names come first, then those.
+ */
+export function openRouterProvider(key: string, model = process.env.OPENROUTER_MODEL?.trim() || "openrouter/free"): SearchProvider {
+  return {
+    name: "openrouter",
+    async search(target) {
+      const data = (await postJson(
+        "https://openrouter.ai/api/v1/chat/completions",
+        key,
+        {
+          model,
+          plugins: [{ id: "web", max_results: 8 }],
+          reasoning: { effort: "low" },
+          messages: [{ role: "user", content: searchPrompt(target) }],
+        },
+        "OpenRouter"
+      )) as {
+        error?: { message?: string; code?: number };
+        choices?: { message?: { content?: string; annotations?: { url_citation?: { url?: unknown } }[] } }[];
+      };
+      // OpenRouter can answer 200 and still carry the upstream model's error.
+      if (data.error) {
+        const code = Number(data.error.code) || 0;
+        throw new SearchError(`OpenRouter error ${code}: ${data.error.message ?? "unknown"}`, code === 429 || code >= 500);
+      }
+      const message = data.choices?.[0]?.message;
+      const cited = (message?.annotations ?? []).map((a) => a.url_citation?.url).filter((u): u is string => typeof u === "string");
+      return [...urlsIn(message?.content ?? ""), ...cited];
     },
   };
 }
@@ -197,15 +234,21 @@ export function fallbackProvider(providers: SearchProvider[], now: () => number 
 }
 
 /**
- * The configured provider: Groq with GROQ_API_KEY and Tavily with
- * TAVILY_API_KEY. With both keys, Groq goes first (or Tavily, with
- * ONLINE_CHECK_PROVIDER=tavily) and the other takes over when it hits a limit.
+ * The configured provider: each one with a key (GROQ_API_KEY,
+ * OPENROUTER_API_KEY, TAVILY_API_KEY), tried in that order, or with the one
+ * ONLINE_CHECK_PROVIDER names first; each takes over when the one before it
+ * hits a limit.
  */
 export function configuredProvider(): SearchProvider | null {
-  const groq = process.env.GROQ_API_KEY?.trim();
-  const tavily = process.env.TAVILY_API_KEY?.trim();
-  const providers = [groq && groqProvider(groq), tavily && tavilyProvider(tavily)].filter((p): p is SearchProvider => Boolean(p));
-  if (process.env.ONLINE_CHECK_PROVIDER?.trim().toLowerCase() === "tavily") providers.reverse();
+  const key = (name: string) => process.env[name]?.trim();
+  const groq = key("GROQ_API_KEY");
+  const openRouter = key("OPENROUTER_API_KEY");
+  const tavily = key("TAVILY_API_KEY");
+  const providers = [groq && groqProvider(groq), openRouter && openRouterProvider(openRouter), tavily && tavilyProvider(tavily)].filter(
+    (p): p is SearchProvider => Boolean(p)
+  );
+  const first = providers.findIndex((p) => p.name === process.env.ONLINE_CHECK_PROVIDER?.trim().toLowerCase());
+  if (first > 0) providers.unshift(...providers.splice(first, 1));
   if (providers.length === 0) return null;
   return providers.length === 1 ? providers[0] : fallbackProvider(providers);
 }
@@ -517,7 +560,7 @@ const MAX_BUSY_WAIT_MS = 65_000;
  */
 export async function runOnlineCheck(prisma: PrismaClient, campaignId: string, limit = DEFAULT_CHECK_LIMIT, deps: RunDeps = {}) {
   const provider = deps.provider ?? configuredProvider();
-  if (!provider) throw new SearchError("No search provider is set up. Set GROQ_API_KEY or TAVILY_API_KEY in .env.");
+  if (!provider) throw new SearchError("No search provider is set up. Set GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY in .env.");
   const runs = progressByCampaign();
   if (runs.get(campaignId)?.running) throw new CheckInProgressError();
 

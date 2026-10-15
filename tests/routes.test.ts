@@ -363,6 +363,6 @@ describe("online check route", () => {
     expect((await check.POST(request("POST", {}), params("nope"))).status).toBe(404);
     const refused = await check.POST(request("POST", {}), params(id));
     expect(refused.status).toBe(503);
-    expect((await refused.json()).error).toContain("GROQ_API_KEY or TAVILY_API_KEY");
+    expect((await refused.json()).error).toContain("GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY");
   });
 });

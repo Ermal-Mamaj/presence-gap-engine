@@ -541,7 +541,7 @@ export default function CampaignDetailPage() {
                 title={
                   online?.provider
                     ? "Searches the web for the own website of up to 20 leads with none listed, and checks each page found against the lead's phone, name and street."
-                    : "Set GROQ_API_KEY or TAVILY_API_KEY in .env to search the web for these leads."
+                    : "Set GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY in .env to search the web for these leads."
                 }
                 className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
               >
