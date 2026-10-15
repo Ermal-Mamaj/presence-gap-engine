@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { formatDay, localDay } from "@/lib/display";
+import { followUpDay } from "@/lib/leads";
 
 interface CampaignSummary {
   id: string;
@@ -14,6 +16,16 @@ interface CampaignSummary {
   _count: { businesses: number };
 }
 
+interface DueFollowUp {
+  id: string;
+  name: string;
+  crmStage: string;
+  followUpAt: string;
+  phone: string | null;
+  email: string | null;
+  campaign: { id: string; name: string };
+}
+
 const STATUS_STYLES: Record<string, string> = {
   DRAFT: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   RUNNING: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
@@ -24,6 +36,7 @@ const STATUS_STYLES: Record<string, string> = {
 export default function Home() {
   const [campaigns, setCampaigns] = useState<CampaignSummary[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [due, setDue] = useState<DueFollowUp[]>([]);
 
   // Promise callbacks rather than async/await: state must not be set on the
   // effect's synchronous path (react-hooks/set-state-in-effect).
@@ -47,6 +60,15 @@ export default function Home() {
     load();
   }, [load]);
 
+  // "Due" means on or before today where the user is, so the browser says
+  // which day that is. A failure here only hides the panel.
+  useEffect(() => {
+    fetch(`/api/followups?through=${localDay()}`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: DueFollowUp[]) => setDue(data))
+      .catch(() => setDue([]));
+  }, []);
+
   return (
     <div className="flex flex-1 flex-col bg-zinc-50 dark:bg-black">
       <main className="mx-auto w-full max-w-4xl flex-1 px-6 py-12">
@@ -66,6 +88,8 @@ export default function Home() {
             New campaign
           </Link>
         </div>
+
+        {due.length > 0 && <FollowUpsDue items={due} />}
 
         {loadError ? (
           <div>
@@ -114,5 +138,36 @@ export default function Home() {
         )}
       </main>
     </div>
+  );
+}
+
+/** Every lead to get back to today or earlier, across campaigns, oldest first. */
+function FollowUpsDue({ items }: { items: DueFollowUp[] }) {
+  const today = localDay();
+  return (
+    <section className="mb-8 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-900/10">
+      <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+        Follow-ups due ({items.length})
+      </h2>
+      <ul className="mt-2 divide-y divide-amber-200/70 dark:divide-amber-900/40">
+        {items.map((lead) => {
+          const day = followUpDay(lead.followUpAt);
+          return (
+            <li key={lead.id} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 text-sm">
+              <span>
+                <Link href={`/leads/${lead.id}`} className="font-medium text-zinc-900 hover:underline dark:text-zinc-50">
+                  {lead.name}
+                </Link>
+                <span className="text-zinc-500"> · {lead.campaign.name} · {lead.crmStage}</span>
+              </span>
+              <span className="text-xs text-amber-800 dark:text-amber-300">
+                {day === today ? "Today" : `Overdue since ${formatDay(day)}`}
+                {(lead.phone || lead.email) && <span className="text-zinc-500"> · {lead.phone ?? lead.email}</span>}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

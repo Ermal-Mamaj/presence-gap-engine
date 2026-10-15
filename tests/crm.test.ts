@@ -1,6 +1,16 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { canTransition, CRM_STAGES, isCrmStage, type CrmStageName } from "@/lib/crm";
-import { InvalidTransitionError, LeadNotFoundError, leadUpdateSchema, updateLead } from "@/lib/leads";
+import {
+  dueFollowUps,
+  followUpDay,
+  InvalidTransitionError,
+  LeadNotFoundError,
+  leadUpdateSchema,
+  markOutreachSent,
+  OutreachNotFoundError,
+  parseFollowUpDay,
+  updateLead,
+} from "@/lib/leads";
 import { createTestDb } from "./helpers/db";
 
 describe("canTransition", () => {
@@ -139,5 +149,84 @@ describe("updateLead", () => {
     await prisma.outreach.create({ data: { businessId: lead.id, subject: "s", openLine: "o", body: "b" } });
     await updateLead(prisma, lead.id, { crmStage: "CONTACTED" });
     expect(await prisma.outreach.count({ where: { businessId: lead.id } })).toBe(1);
+  });
+});
+
+describe("follow-up days", () => {
+  it("reads a calendar day as UTC midnight, and back", () => {
+    const date = parseFollowUpDay("2026-10-17");
+    expect(date?.toISOString()).toBe("2026-10-17T00:00:00.000Z");
+    expect(followUpDay(date!)).toBe("2026-10-17");
+  });
+
+  it.each(["2026-02-30", "2026-13-01", "17/10/2026", "2026-10-17T10:00:00Z", ""])("rejects %j", (day) => {
+    expect(parseFollowUpDay(day)).toBeNull();
+  });
+
+  it("is accepted, or cleared with null, by a lead update", () => {
+    const parsed = leadUpdateSchema.parse({ followUpAt: "2026-10-17" });
+    expect(parsed.followUpAt?.toISOString()).toBe("2026-10-17T00:00:00.000Z");
+    expect(leadUpdateSchema.parse({ followUpAt: null }).followUpAt).toBeNull();
+    expect(leadUpdateSchema.safeParse({ followUpAt: "next week" }).success).toBe(false);
+  });
+});
+
+describe("markOutreachSent and dueFollowUps", () => {
+  const db = createTestDb();
+  const { prisma } = db;
+  afterAll(() => db.cleanup());
+
+  async function leadWithDraft(data: { crmStage?: CrmStageName; followUpAt?: Date } = {}) {
+    const campaign = await prisma.campaign.create({ data: { name: "c", region: "r", niche: "n" } });
+    const lead = await prisma.business.create({
+      data: { campaignId: campaign.id, name: "Clinic", dedupeKey: `ref:${Math.random()}`, ...data },
+    });
+    const draft = await prisma.outreach.create({ data: { businessId: lead.id, subject: "s", openLine: "o", body: "b" } });
+    return { lead, draft, campaign };
+  }
+  const NOW = new Date("2026-10-14T15:30:00.000Z");
+
+  it("records the send, moves a new lead to CONTACTED, and plans a follow-up three days on", async () => {
+    const { lead, draft } = await leadWithDraft();
+    const { outreach, business } = await markOutreachSent(prisma, draft.id, NOW);
+    expect(outreach.sentAt).toEqual(NOW);
+    expect(business.crmStage).toBe("CONTACTED");
+    expect(followUpDay(business.followUpAt!)).toBe("2026-10-17");
+    const changes = await prisma.stageChange.findMany({ where: { businessId: lead.id } });
+    expect(changes).toEqual([expect.objectContaining({ fromStage: "NEW", toStage: "CONTACTED" })]);
+  });
+
+  it("leaves a lead that is further along, and a follow-up already planned, as they are", async () => {
+    const planned = parseFollowUpDay("2026-10-20")!;
+    const { lead, draft } = await leadWithDraft({ crmStage: "REPLIED", followUpAt: planned });
+    const { business } = await markOutreachSent(prisma, draft.id, NOW);
+    expect(business).toMatchObject({ crmStage: "REPLIED", followUpAt: planned });
+    expect(await prisma.stageChange.count({ where: { businessId: lead.id } })).toBe(0);
+  });
+
+  it("keeps the first send time when a draft is marked sent twice", async () => {
+    const { draft } = await leadWithDraft();
+    await markOutreachSent(prisma, draft.id, NOW);
+    const { outreach } = await markOutreachSent(prisma, draft.id, new Date("2026-10-20T09:00:00.000Z"));
+    expect(outreach.sentAt).toEqual(NOW);
+  });
+
+  it("reports an unknown draft", async () => {
+    await expect(markOutreachSent(prisma, "nope")).rejects.toBeInstanceOf(OutreachNotFoundError);
+  });
+
+  it("lists follow-ups due on or before a day, oldest first, leaving dead leads out", async () => {
+    const day = (d: string) => parseFollowUpDay(d)!;
+    const { campaign } = await leadWithDraft();
+    const make = (name: string, followUpAt: Date | null, crmStage: CrmStageName = "CONTACTED") =>
+      prisma.business.create({ data: { campaignId: campaign.id, name, dedupeKey: name, followUpAt, crmStage } });
+    await make("due today", day("2026-10-14"));
+    await make("overdue", day("2026-10-10"));
+    await make("tomorrow", day("2026-10-15"));
+    await make("dead", day("2026-10-01"), "DEAD");
+    await make("nothing planned", null);
+
+    const due = (await dueFollowUps(prisma, day("2026-10-14"))).filter((b) => b.campaign.id === campaign.id);
+    expect(due.map((b) => b.name)).toEqual(["overdue", "due today"]);
   });
 });

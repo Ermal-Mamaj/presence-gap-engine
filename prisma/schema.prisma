@@ -114,6 +114,7 @@ model Business {
   score         Float    @default(0)
   crmStage      CrmStage @default(NEW)
   notes         String?
+  followUpAt    DateTime? // the day to get back to this lead; null = nothing scheduled
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -125,6 +126,7 @@ model Business {
   @@unique([campaignId, dedupeKey])
   @@index([campaignId])
   @@index([campaignId, score])
+  @@index([followUpAt])
 }
 
 model GapSignal {
@@ -152,6 +154,7 @@ model Outreach {
   subject    String?
   body       String
   openLine   String
+  sentAt     DateTime? // when this draft was actually sent; null = not sent
 
   createdAt  DateTime @default(now())
 

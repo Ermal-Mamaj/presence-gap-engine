@@ -5,10 +5,13 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { contactChannels } from "@/lib/contacts";
 import { CRM_STAGES } from "@/lib/crm";
+import { followUpDay } from "@/lib/leads";
 import { DRAFT_LANGUAGES, isDraftLanguage } from "@/lib/outreachOptions";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
+  formatDay,
   formatDuration,
+  localDay,
   formatTimestamp,
   SCAN_STATUS_STYLE,
   WEBSITE_STATUS_HINT,
@@ -17,7 +20,7 @@ import {
 } from "@/lib/display";
 
 const WEBSITE_STATUSES: WebsiteStatus[] = ["NONE_FOUND", "NEEDS_WORK", "NEEDS_CHECK", "GOOD"];
-type SortKey = "score" | "name";
+type SortKey = "score" | "name" | "followUp";
 
 /** How often to re-read a campaign while its scan is running. */
 const SCAN_POLL_MS = 2000;
@@ -48,6 +51,7 @@ interface Business {
   crmStage: string;
   websiteStatus: WebsiteStatus;
   lastSeenAt: string;
+  followUpAt: string | null;
   signals: GapSignal[];
 }
 
@@ -177,8 +181,14 @@ export default function CampaignDetailPage() {
         (siteFilter === "ALL" || b.websiteStatus === siteFilter) &&
         matchesContact(b)
     );
+    // Soonest follow-up first; leads with nothing planned go last, by score.
+    const followUpOrder = (b: Business) => (b.followUpAt ? new Date(b.followUpAt).getTime() : Infinity);
     return rows.sort((a, b) =>
-      sortKey === "name" ? a.name.localeCompare(b.name) : b.score - a.score
+      sortKey === "name"
+        ? a.name.localeCompare(b.name)
+        : sortKey === "followUp"
+          ? followUpOrder(a) - followUpOrder(b) || b.score - a.score
+          : b.score - a.score
     );
   }, [campaign?.businesses, stageFilter, siteFilter, contactFilter, sortKey]);
 
@@ -390,6 +400,7 @@ export default function CampaignDetailPage() {
               >
                 <option value="score">Highest score</option>
                 <option value="name">Name A–Z</option>
+                <option value="followUp">Follow-up soonest</option>
               </select>
 
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -523,6 +534,7 @@ export default function CampaignDetailPage() {
                       <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STAGE_STYLES[b.crmStage] ?? ""}`}>
                         {b.crmStage}
                       </span>
+                      {b.followUpAt && <FollowUpNote day={followUpDay(b.followUpAt)} />}
                     </td>
                   </tr>
                 ))}
@@ -591,5 +603,18 @@ export default function CampaignDetailPage() {
         )}
       </main>
     </div>
+  );
+}
+
+/** When to get back to a lead, flagged once it is due. */
+function FollowUpNote({ day }: { day: string }) {
+  const today = localDay();
+  return (
+    <p
+      className={`mt-1 whitespace-nowrap text-xs ${day <= today ? "font-medium text-amber-700 dark:text-amber-400" : "text-zinc-500"}`}
+    >
+      {day < today ? "Overdue: " : day === today ? "Due today" : "Follow up "}
+      {day === today ? "" : formatDay(day)}
+    </p>
   );
 }
