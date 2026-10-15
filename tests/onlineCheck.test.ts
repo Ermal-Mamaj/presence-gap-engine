@@ -3,6 +3,7 @@ import {
   checkLeadOnline,
   configuredProvider,
   couldBeOwnSite,
+  fallbackProvider,
   groqProvider,
   matchPage,
   runOnlineCheck,
@@ -160,14 +161,78 @@ describe("search providers", () => {
     await expect(tavilyProvider("k").search(target)).rejects.toMatchObject({ busy: true });
   });
 
-  it("uses Groq when its key is set, Tavily otherwise, or the one asked for", () => {
+  it("treats Tavily's out-of-credits answer as a limit", async () => {
+    stub({ detail: { error: "plan limit exceeded" } }, 432);
+    await expect(tavilyProvider("k").search(target)).rejects.toMatchObject({ busy: true });
+  });
+
+  it("uses whichever key is set, and with both, Groq first unless Tavily is asked for", () => {
+    vi.stubEnv("GROQ_API_KEY", "");
+    vi.stubEnv("TAVILY_API_KEY", "");
     expect(configuredProvider()).toBeNull();
     vi.stubEnv("TAVILY_API_KEY", "t");
     expect(configuredProvider()?.name).toBe("tavily");
     vi.stubEnv("GROQ_API_KEY", "g");
-    expect(configuredProvider()?.name).toBe("groq");
+    expect(configuredProvider()?.name).toBe("groq + tavily");
     vi.stubEnv("ONLINE_CHECK_PROVIDER", "tavily");
-    expect(configuredProvider()?.name).toBe("tavily");
+    expect(configuredProvider()?.name).toBe("tavily + groq");
+  });
+});
+
+describe("fallbackProvider", () => {
+  function scripted(name: string, answers: (string[] | SearchError)[]) {
+    const p = {
+      name,
+      calls: 0,
+      async search() {
+        const answer = answers[Math.min(p.calls++, answers.length - 1)];
+        if (answer instanceof SearchError) throw answer;
+        return answer;
+      },
+    };
+    return p;
+  }
+  const limited = (name: string) => new SearchError(`${name} error 429: limit`, true);
+
+  it("hands over when the first hits its limit, and goes back to it after a minute", async () => {
+    let clock = 0;
+    const groq = scripted("groq", [limited("Groq"), ["https://from-groq.al"]]);
+    const tavily = scripted("tavily", [["https://from-tavily.al"]]);
+    const both = fallbackProvider([groq, tavily], () => clock);
+
+    expect(await both.search(target)).toEqual(["https://from-tavily.al"]);
+    clock = 30_000;
+    expect(await both.search(target)).toEqual(["https://from-tavily.al"]);
+    expect(groq.calls).toBe(1); // resting, not asked again
+    clock = 61_000;
+    expect(await both.search(target)).toEqual(["https://from-groq.al"]);
+    expect(tavily.calls).toBe(2);
+  });
+
+  it("passes over a rejected key for good", async () => {
+    let clock = 0;
+    const groq = scripted("groq", [new SearchError("Groq error 401: invalid key")]);
+    const tavily = scripted("tavily", [["https://x.al"]]);
+    const both = fallbackProvider([groq, tavily], () => clock);
+    await both.search(target);
+    clock = 10 * 60_000;
+    await both.search(target);
+    expect(groq.calls).toBe(1);
+  });
+
+  it("is busy, naming both, when both are at their limit; and tries them again rather than none", async () => {
+    const groq = scripted("groq", [limited("Groq")]);
+    const tavily = scripted("tavily", [limited("Tavily")]);
+    const both = fallbackProvider([groq, tavily], () => 0);
+    await expect(both.search(target)).rejects.toMatchObject({ busy: true, message: "Groq error 429: limit; Tavily error 429: limit" });
+    await expect(both.search(target)).rejects.toMatchObject({ busy: true });
+    expect([groq.calls, tavily.calls]).toEqual([2, 2]);
+  });
+
+  it("says to check the keys when every key was rejected", async () => {
+    const both = fallbackProvider([scripted("groq", [new SearchError("Groq error 401: invalid key")])], () => 0);
+    await expect(both.search(target)).rejects.toMatchObject({ busy: false, message: "Groq error 401: invalid key" });
+    await expect(both.search(target)).rejects.toThrow(/check the API keys/);
   });
 });
 
