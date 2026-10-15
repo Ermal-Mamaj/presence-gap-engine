@@ -27,6 +27,14 @@ Two pluggable sources behind a common interface (`src/lib/sources/types.ts`):
   geocode the region and the Overpass API to query businesses by OSM tag. No
   ToS risk, but coverage and data completeness (websites, phone numbers)
   vary a lot by region, since it depends on what's been mapped.
+  Both services are shared and often busy, so the client
+  (`src/lib/sources/osmClient.ts`) is polite and patient: Nominatim gets at
+  most one request per second across the app, with each region cached for a
+  day, as its usage policy asks. An Overpass query that the main instance
+  turns away (busy, rate-limited, timed out, out of memory) goes to a mirror,
+  then both are retried after 15s and 45s. A refusal every server would
+  repeat, such as a malformed query, fails at once. Set `OVERPASS_URLS`
+  (comma-separated) to use other instances.
 - **Google Maps scraper** (`GOOGLE_MAPS_SCRAPER`, experimental) — uses
   Playwright to scrape Google Maps search results and each listing's detail
   pane for name, address, phone, website, rating, and review count.
