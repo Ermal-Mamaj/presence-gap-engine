@@ -119,6 +119,10 @@ A failed request is **not** proof of a gap. Network errors, timeouts, TLS failur
 - Invalid inputs (a rating outside 0–5, negative or non-finite counts or severities) are ignored, so the score is always finite and within range.
 - **Rescoring needs no rescan.** A score is stored when a scan runs. After changing a weight, **Recalculate scores** on a campaign (`POST /api/campaigns/<id>/rescore`, `src/lib/rescore.ts`) recomputes every lead from its stored signals and listing fields without fetching anything, and writes nothing but the score.
 
+## Managing campaigns
+
+A campaign can be renamed and its draft language changed from its page (`PATCH /api/campaigns/<id>`). Region, niche and source stay fixed, since they define what was scanned. **Delete campaign** (`DELETE /api/campaigns/<id>`) removes the campaign with every lead, draft, note, stage history and scan in it, after a confirmation that says how many leads have been worked. It is refused while a scan is running, checked in the same statement that deletes, unless that scan has been silent past the 15-minute stale window and so has crashed.
+
 ## CRM stages
 
 Stages move forward freely (skipping is allowed), one step back is allowed to fix a mistake, any lead can be marked `DEAD`, and a dead lead can only be reopened to `NEW` or `QUALIFIED` (`src/lib/crm.ts`). Every stage change is stored in `StageChange`.

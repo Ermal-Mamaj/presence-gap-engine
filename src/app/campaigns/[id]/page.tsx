@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { contactChannels } from "@/lib/contacts";
 import { CRM_STAGES } from "@/lib/crm";
 import { followUpDay } from "@/lib/leads";
-import { DRAFT_LANGUAGES, isDraftLanguage } from "@/lib/outreachOptions";
+import { DRAFT_LANGUAGES, type DraftLanguage, isDraftLanguage } from "@/lib/outreachOptions";
 import type { WebsiteStatus } from "@/lib/detect";
 import {
   formatDay,
@@ -109,6 +109,7 @@ export default function CampaignDetailPage() {
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [running, setRunning] = useState(false);
   const [rescoring, setRescoring] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [rescoreNotice, setRescoreNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -268,13 +269,31 @@ export default function CampaignDetailPage() {
         </Link>
 
         <div className="mt-2 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">{campaign.name}</h1>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              {campaign.niche} in {campaign.region} · source: {campaign.source} · drafts in{" "}
-              {isDraftLanguage(campaign.language) ? DRAFT_LANGUAGES[campaign.language] : campaign.language}
-            </p>
-          </div>
+          {editing ? (
+            <CampaignSettingsForm
+              campaign={campaign}
+              onDone={() => {
+                setEditing(false);
+                load();
+              }}
+            />
+          ) : (
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+                {campaign.name}{" "}
+                <button
+                  onClick={() => setEditing(true)}
+                  className="align-middle text-xs font-normal text-zinc-500 underline hover:text-zinc-700"
+                >
+                  Edit
+                </button>
+              </h1>
+              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                {campaign.niche} in {campaign.region} · source: {campaign.source} · drafts in{" "}
+                {isDraftLanguage(campaign.language) ? DRAFT_LANGUAGES[campaign.language] : campaign.language}
+              </p>
+            </div>
+          )}
           <button
             onClick={handleRun}
             disabled={running || campaign.status === "RUNNING"}
@@ -601,6 +620,8 @@ export default function CampaignDetailPage() {
             </div>
           </section>
         )}
+
+        <DeleteCampaign campaign={campaign} scanning={scanning} />
       </main>
     </div>
   );
@@ -616,5 +637,116 @@ function FollowUpNote({ day }: { day: string }) {
       {day < today ? "Overdue: " : day === today ? "Due today" : "Follow up "}
       {day === today ? "" : formatDay(day)}
     </p>
+  );
+}
+
+/** Rename the campaign or change the language its drafts are written in. Region and niche stay: they define what was scanned. */
+function CampaignSettingsForm({ campaign, onDone }: { campaign: Campaign; onDone: () => void }) {
+  const [name, setName] = useState(campaign.name);
+  const [language, setLanguage] = useState<DraftLanguage>(isDraftLanguage(campaign.language) ? campaign.language : "en");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/campaigns/${campaign.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, language }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? "Could not save the campaign");
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="flex flex-wrap items-end gap-2">
+      <label className="text-xs text-zinc-500">
+        Name
+        <input
+          required
+          maxLength={120}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="mt-1 block w-64 rounded-md border border-zinc-300 px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+        />
+      </label>
+      <label className="text-xs text-zinc-500">
+        Draft language
+        <select
+          value={language}
+          onChange={(e) => setLanguage(e.target.value as DraftLanguage)}
+          className="mt-1 block rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+        >
+          {Object.entries(DRAFT_LANGUAGES).map(([code, label]) => (
+            <option key={code} value={code}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="submit"
+        disabled={saving}
+        className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+      >
+        {saving ? "Saving…" : "Save"}
+      </button>
+      <button type="button" onClick={onDone} className="px-2 py-1.5 text-sm text-zinc-500 hover:underline">
+        Cancel
+      </button>
+      {error && <p className="w-full text-sm text-red-600 dark:text-red-400">{error}</p>}
+    </form>
+  );
+}
+
+/**
+ * Deleting removes every lead, draft, note and stage history in the campaign,
+ * so the confirmation says how much work that is before asking.
+ */
+function DeleteCampaign({ campaign, scanning }: { campaign: Campaign; scanning: boolean }) {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  async function remove() {
+    const leads = campaign.businesses.length;
+    const worked = campaign.businesses.filter((b) => b.crmStage !== "NEW").length;
+    const message =
+      `Delete "${campaign.name}" and its ${leads} lead${leads === 1 ? "" : "s"}?` +
+      (worked ? ` ${worked === 1 ? "One has" : `${worked} of them have`} moved past NEW; their drafts, notes and history go too.` : "") +
+      " This can't be undone. Export the CSV first if you might need them.";
+    if (!window.confirm(message)) return;
+    setDeleting(true);
+    setError(null);
+    const res = await fetch(`/api/campaigns/${campaign.id}`, { method: "DELETE" });
+    if (res.ok) {
+      router.push("/");
+      return;
+    }
+    const data = await res.json().catch(() => null);
+    setError(data?.error ?? "Could not delete the campaign");
+    setDeleting(false);
+  }
+
+  return (
+    <section className="mt-12 border-t border-zinc-200 pt-6 dark:border-zinc-800">
+      <button
+        onClick={remove}
+        disabled={deleting || scanning}
+        title={scanning ? "Wait for the scan to finish first." : undefined}
+        className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+      >
+        {deleting ? "Deleting…" : "Delete campaign"}
+      </button>
+      {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
+    </section>
   );
 }
