@@ -5,6 +5,7 @@ import {
   couldBeOwnSite,
   fallbackProvider,
   groqProvider,
+  openRouterProvider,
   matchPage,
   runOnlineCheck,
   type SearchProvider,
@@ -255,16 +256,40 @@ describe("search providers", () => {
     await expect(tavilyProvider("k").search(target)).rejects.toMatchObject({ busy: true });
   });
 
-  it("uses whichever key is set, and with both, Groq first unless Tavily is asked for", () => {
-    vi.stubEnv("GROQ_API_KEY", "");
-    vi.stubEnv("TAVILY_API_KEY", "");
+  it("uses each key that is set, Groq then OpenRouter then Tavily, or the one asked for first", () => {
+    for (const name of ["GROQ_API_KEY", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "ONLINE_CHECK_PROVIDER"]) vi.stubEnv(name, "");
     expect(configuredProvider()).toBeNull();
     vi.stubEnv("TAVILY_API_KEY", "t");
     expect(configuredProvider()?.name).toBe("tavily");
     vi.stubEnv("GROQ_API_KEY", "g");
     expect(configuredProvider()?.name).toBe("groq + tavily");
+    vi.stubEnv("OPENROUTER_API_KEY", "o");
+    expect(configuredProvider()?.name).toBe("groq + openrouter + tavily");
     vi.stubEnv("ONLINE_CHECK_PROVIDER", "tavily");
-    expect(configuredProvider()?.name).toBe("tavily + groq");
+    expect(configuredProvider()?.name).toBe("tavily + groq + openrouter");
+  });
+
+  it("asks OpenRouter for a web search on a free model, and reads the model's URLs, then the results", async () => {
+    const calls = stub({
+      choices: [
+        {
+          message: {
+            content: "http://studiodentareaa.com/",
+            annotations: [{ type: "url_citation", url_citation: { url: "https://exa.ai/library/place/x" } }, { type: "other" }],
+          },
+        },
+      ],
+    });
+    expect(await openRouterProvider("sk-or-key").search(target)).toEqual(["http://studiodentareaa.com/", "https://exa.ai/library/place/x"]);
+    expect(calls[0].url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ model: "openrouter/free", plugins: [{ id: "web" }] });
+  });
+
+  it("takes an OpenRouter error inside a 200 answer as an error, and out of credits as a limit", async () => {
+    stub({ error: { code: 429, message: "google/gemma-4-26b-a4b-it:free is temporarily rate-limited upstream" } });
+    await expect(openRouterProvider("k").search(target)).rejects.toMatchObject({ busy: true, message: expect.stringContaining("rate-limited") });
+    stub({ error: { message: "Insufficient credits" } }, 402);
+    await expect(openRouterProvider("k").search(target)).rejects.toMatchObject({ busy: true });
   });
 });
 
@@ -430,6 +455,6 @@ describe("runOnlineCheck", () => {
   });
 
   it("refuses to start without a provider", async () => {
-    await expect(runOnlineCheck(prisma, campaignId)).rejects.toThrow(/GROQ_API_KEY or TAVILY_API_KEY/);
+    await expect(runOnlineCheck(prisma, campaignId)).rejects.toThrow(/GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY/);
   });
 });

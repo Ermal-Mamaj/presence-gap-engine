@@ -28,7 +28,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
   }
   if (!configuredProvider()) {
-    return NextResponse.json({ error: "No search provider is set up. Set GROQ_API_KEY or TAVILY_API_KEY in .env." }, { status: 503 });
+    return NextResponse.json({ error: "No search provider is set up. Set GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY in .env." }, { status: 503 });
   }
   if (checkProgress(id)?.running) {
     return NextResponse.json({ error: "The online check for this campaign is already running." }, { status: 409 });
