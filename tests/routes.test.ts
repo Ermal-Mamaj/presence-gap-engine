@@ -292,3 +292,41 @@ describe("outreach, follow-ups and pipeline", () => {
     expect(all.total).toBeGreaterThan(2);
   });
 });
+
+describe("templates API", () => {
+  it("creates, lists, edits and deletes a template, refusing a bad one with its reason", async () => {
+    const templates = await import("@/app/api/templates/route");
+    const one = await import("@/app/api/templates/[id]/route");
+    const input = { language: "sq", channel: "email", gapKey: "no_website", subject: "Për {{name}}", body: "Përshëndetje {{name}}" };
+
+    const bad = await templates.POST(request("POST", { ...input, body: "Hi {{owner}}" }));
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toContain("Unknown placeholder");
+
+    const created = await templates.POST(request("POST", input));
+    expect(created.status).toBe(201);
+    const { id } = await created.json();
+    const listed = await (await templates.GET()).json();
+    expect(listed.find((t: { id: string }) => t.id === id)).toMatchObject({ _count: { outreach: 0 } });
+
+    const edited = await one.PATCH(request("PATCH", { ...input, body: "Tjetër {{name}}" }), params(id));
+    expect(edited.status).toBe(200);
+    expect((await one.DELETE(request("DELETE"), params(id))).status).toBe(204);
+    expect((await one.DELETE(request("DELETE"), params(id))).status).toBe(404);
+  });
+
+  it("drafts a lead from a template, and says which one is missing when none fits", async () => {
+    const templates = await import("@/app/api/templates/route");
+    const { id: campaignId } = await newCampaign({ language: "sq" });
+    const { id } = await newLead(campaignId, { signals: { create: [{ key: "no_website", label: "No website found", severity: 40 }] } });
+
+    const missing = await leadDraft.POST(request("POST", { channel: "phone" }), params(id));
+    expect(missing.status).toBe(422);
+    expect((await missing.json()).error).toContain("call script template");
+
+    await templates.POST(request("POST", { language: "sq", channel: "phone", gapKey: "no_website", body: "Mirëdita, flas për {{name}}" }));
+    const made = await leadDraft.POST(request("POST", { channel: "phone" }), params(id));
+    expect(made.status).toBe(201);
+    expect(await made.json()).toMatchObject({ channel: "phone", body: "Mirëdita, flas për Klinika", templateId: expect.any(String) });
+  });
+});
