@@ -22,10 +22,11 @@ const OVERPASS_TIMEOUT_MS = 40_000;
 
 // The main instance often answers 504 ("too busy") or 429 (no free slot for
 // this client), which used to fail the whole scan. The mirror serves the same
-// data. Override with OVERPASS_URLS, comma-separated.
+// data; private.coffee (formerly overpass.kumi.systems) is listed on the OSM
+// wiki with no rate limit. Override with OVERPASS_URLS, comma-separated.
 const DEFAULT_OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
-  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
 ];
 
 /** Pause before each round; a round tries every remaining server once. */
@@ -201,16 +202,22 @@ export async function fetchOverpass(query: string, deps: OverpassDeps = {}): Pro
     if (pause > 0) await sleep(pause);
     comeBackAfter = 0;
 
-    let tooHeavyEverywhere = true;
+    // Counted, not assumed: a round the deadline cut short before any attempt
+    // must not read as "every server found the query too heavy".
+    let triedThisRound = 0;
+    let heavyThisRound = 0;
     for (const url of [...servers]) {
       if (attempts > 0 && !timeLeftFor(attemptMs)) break;
       attempts++;
+      triedThisRound++;
       try {
         return await queryOnce(url, query);
       } catch (err) {
         last = err instanceof Error ? err : new Error(String(err));
-        if (err instanceof HeavyQueryError) continue;
-        tooHeavyEverywhere = false;
+        if (err instanceof HeavyQueryError) {
+          heavyThisRound++;
+          continue;
+        }
         if (err instanceof TransientError) {
           comeBackAfter = Math.max(comeBackAfter, err.retryAfterMs);
           continue;
@@ -219,7 +226,7 @@ export async function fetchOverpass(query: string, deps: OverpassDeps = {}): Pro
         if (servers.length === 0) throw last;
       }
     }
-    if (tooHeavyEverywhere && last) {
+    if (triedThisRound > 0 && heavyThisRound === triedThisRound && last) {
       throw new Error(`${last.message}. The region is probably too large for one query; try a smaller one.`);
     }
   }

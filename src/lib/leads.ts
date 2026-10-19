@@ -127,12 +127,18 @@ export async function markOutreachSent(
     // Each write is conditional on the state it changes, so two marks racing
     // (a double click) record one send, one stage move and one history row.
     await tx.outreach.updateMany({ where: { id: outreachId, sentAt: null }, data: { sentAt: now } });
-    const moved = await tx.business.updateMany({
-      where: { id: lead.id, crmStage: { in: ["NEW", "QUALIFIED"] } },
-      data: { crmStage: "CONTACTED" },
-    });
-    if (moved.count === 1) {
-      await tx.stageChange.create({ data: { businessId: lead.id, fromStage: lead.crmStage, toStage: "CONTACTED" } });
+    // One conditional move per starting stage, so the history row records the
+    // stage the lead was actually in at the moment it moved, not the one read
+    // at the start of the transaction.
+    for (const fromStage of ["NEW", "QUALIFIED"] as const) {
+      const moved = await tx.business.updateMany({
+        where: { id: lead.id, crmStage: fromStage },
+        data: { crmStage: "CONTACTED" },
+      });
+      if (moved.count === 1) {
+        await tx.stageChange.create({ data: { businessId: lead.id, fromStage, toStage: "CONTACTED" } });
+        break;
+      }
     }
     await tx.business.updateMany({ where: { id: lead.id, followUpAt: null }, data: { followUpAt: followUp } });
 

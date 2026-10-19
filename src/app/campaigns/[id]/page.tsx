@@ -49,6 +49,7 @@ interface Business {
   address: string | null;
   phone: string | null;
   email: string | null;
+  emailFromSite: boolean;
   facebook: string | null;
   instagram: string | null;
   website: string | null;
@@ -70,7 +71,7 @@ type ContactFilter = "ALL" | "REACHABLE" | "EMAIL" | "NONE";
 /** Short labels for the contact column, with the values themselves as tooltips. */
 function contactSummary(b: Business): { label: string; value: string }[] {
   return [
-    b.email && { label: "Email", value: b.email },
+    b.email && { label: "Email", value: b.emailFromSite ? `${b.email} (from their website; check it is theirs)` : b.email },
     b.phone && { label: "Phone", value: b.phone },
     b.facebook && { label: "Facebook", value: b.facebook },
     b.instagram && { label: "Instagram", value: b.instagram },

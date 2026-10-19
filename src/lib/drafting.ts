@@ -56,7 +56,7 @@ export interface BulkDraftOutcome {
  * One lead's failure doesn't stop the rest, except a credentials failure,
  * which every remaining call would repeat.
  */
-export async function draftTopLeads(
+async function draftTopLeadsNow(
   prisma: PrismaClient,
   campaignId: string,
   options: { limit?: number; deps?: OutreachDeps } = {}
@@ -91,4 +91,38 @@ export async function draftTopLeads(
     }
   });
   return outcome;
+}
+
+/** Another bulk run for the same campaign is still drafting. */
+export class BulkDraftInProgressError extends Error {
+  constructor() {
+    super("Drafting for this campaign is already running. Wait for it to finish.");
+    this.name = "BulkDraftInProgressError";
+  }
+}
+
+// Campaigns with a bulk run in progress, for the whole process (on globalThis,
+// like the Prisma client, so a dev reload can't start a second set).
+const globalForBulk = globalThis as unknown as { bulkDraftRuns?: Set<string> };
+const runningBulk = () => (globalForBulk.bulkDraftRuns ??= new Set<string>());
+
+/**
+ * Drafts the best leads in a campaign that are ready for a first message (see
+ * draftTopLeadsNow), one run per campaign at a time. Without this, a second
+ * tab or a retry after a slow response would pick the same undrafted leads
+ * and draft each twice, at twice the cost.
+ */
+export async function draftTopLeads(
+  prisma: PrismaClient,
+  campaignId: string,
+  options: { limit?: number; deps?: OutreachDeps } = {}
+): Promise<BulkDraftOutcome> {
+  const running = runningBulk();
+  if (running.has(campaignId)) throw new BulkDraftInProgressError();
+  running.add(campaignId);
+  try {
+    return await draftTopLeadsNow(prisma, campaignId, options);
+  } finally {
+    running.delete(campaignId);
+  }
 }
