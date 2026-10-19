@@ -212,11 +212,15 @@ export default function CampaignDetailPage() {
 
   const filtering = stageFilter !== "ALL" || siteFilter !== "ALL" || contactFilter !== "ALL";
 
-  async function handleRun() {
+  async function handleRun(checkOnline = false) {
     setRunning(true);
     setError(null);
     try {
-      const res = await fetch(`/api/campaigns/${id}/run`, { method: "POST" });
+      const res = await fetch(`/api/campaigns/${id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checkOnline }),
+      });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? "Run failed");
       // 202 Accepted: the scan has started, not finished. Reload so the
@@ -247,6 +251,17 @@ export default function CampaignDetailPage() {
   useEffect(() => {
     readOnlineCheck();
   }, [readOnlineCheck]);
+
+  // "Scan + check online" starts the check on the server the moment the scan
+  // succeeds, so look for it just after the scan ends.
+  const wasScanning = useRef(false);
+  useEffect(() => {
+    if (wasScanning.current && !scanning) {
+      const timer = setTimeout(readOnlineCheck, 1500);
+      return () => clearTimeout(timer);
+    }
+    wasScanning.current = scanning;
+  }, [scanning, readOnlineCheck]);
 
   useEffect(() => {
     if (!online?.progress?.running) return;
@@ -375,13 +390,27 @@ export default function CampaignDetailPage() {
               </p>
             </div>
           )}
-          <button
-            onClick={handleRun}
-            disabled={running || campaign.status === "RUNNING"}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-          >
-            {running || campaign.status === "RUNNING" ? "Running…" : campaign.businesses.length ? "Re-run" : "Run pipeline"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => handleRun()}
+              disabled={running || campaign.status === "RUNNING"}
+              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {running || campaign.status === "RUNNING" ? "Running…" : campaign.businesses.length ? "Re-run" : "Run pipeline"}
+            </button>
+            <button
+              onClick={() => handleRun(true)}
+              disabled={running || campaign.status === "RUNNING" || !online?.provider || Boolean(online?.progress?.running)}
+              title={
+                online?.provider
+                  ? "Runs the scan, then searches the web for the own website of up to 20 leads with none listed, without waiting for you in between."
+                  : "Set GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY in .env to search the web for these leads."
+              }
+              className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            >
+              Scan + check online
+            </button>
+          </div>
         </div>
 
         {campaign.status === "FAILED" && campaign.errorMessage && (
