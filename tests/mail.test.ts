@@ -159,3 +159,59 @@ describe("mailStatus and the do-not-contact list", () => {
     expect(await isDoNotContact(prisma, "dr@klinika.com")).toBe(false);
   });
 });
+
+describe("sending: problems found in review", () => {
+  it("keeps to the daily limit when two different drafts are sent at the same moment", async () => {
+    configure({ MAIL_DAILY_LIMIT: "1" });
+    const { transport, sent } = fakeTransport();
+    const results = await Promise.allSettled([
+      sendDraftEmail(prisma, (await emailDraft()).id, { transport }),
+      sendDraftEmail(prisma, (await emailDraft()).id, { transport }),
+    ]);
+    expect(sent).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
+  });
+
+  it("says plainly when an email went out but couldn't be recorded, instead of inviting a retry", async () => {
+    configure();
+    const draft = await emailDraft();
+    const transport = {
+      sendMail: vi.fn(async () => {
+        await prisma.outreach.delete({ where: { id: draft.id } }); // the record is gone by the time it is saved
+        return { messageId: "<x@outreach.example>" };
+      }),
+    } as unknown as Transporter;
+    await expect(sendDraftEmail(prisma, draft.id, { transport })).rejects.toMatchObject({
+      kind: "sent_not_recorded",
+      message: expect.stringMatching(/WAS sent.*Don't send it again/),
+    });
+  });
+
+  it("records how it was sent in the same write as the send itself", async () => {
+    configure();
+    const draft = await emailDraft();
+    await sendDraftEmail(prisma, draft.id, { transport: fakeTransport().transport });
+    expect(await prisma.outreach.findUniqueOrThrow({ where: { id: draft.id } })).toMatchObject({
+      sentVia: "app_email",
+      emailMessageId: "<abc@outreach.example>",
+    });
+  });
+
+  it("blocks the subdomains of a blocked domain", async () => {
+    await addDoNotContact(prisma, "klinika.al");
+    expect(await isDoNotContact(prisma, "info@klinika.al")).toBe(true);
+    expect(await isDoNotContact(prisma, "info@mail.klinika.al")).toBe(true);
+    expect(await isDoNotContact(prisma, "x@a.b.klinika.al")).toBe(true);
+    expect(await isDoNotContact(prisma, "info@notklinika.al")).toBe(false);
+    expect(await isDoNotContact(prisma, "info@al")).toBe(false);
+  });
+
+  it("won't send a draft written before the web check found the business a website", async () => {
+    configure();
+    const draft = await emailDraft();
+    await prisma.business.update({ where: { id: draft.businessId }, data: { onlineCheck: "found", onlineCheckedAt: new Date(Date.now() + 1000) } });
+    const { transport, sent } = fakeTransport();
+    await expect(sendDraftEmail(prisma, draft.id, { transport })).rejects.toMatchObject({ kind: "outdated" });
+    expect(sent).toHaveLength(0);
+  });
+});

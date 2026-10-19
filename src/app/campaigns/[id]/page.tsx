@@ -255,13 +255,17 @@ export default function CampaignDetailPage() {
   // "Scan + check online" starts the check on the server the moment the scan
   // succeeds, so look for it just after the scan ends.
   const wasScanning = useRef(false);
+  const readOnlineCheckRef = useRef(readOnlineCheck);
   useEffect(() => {
-    if (wasScanning.current && !scanning) {
-      const timer = setTimeout(readOnlineCheck, 1500);
-      return () => clearTimeout(timer);
-    }
+    readOnlineCheckRef.current = readOnlineCheck;
+  }, [readOnlineCheck]);
+  useEffect(() => {
+    const justFinished = wasScanning.current && !scanning;
     wasScanning.current = scanning;
-  }, [scanning, readOnlineCheck]);
+    if (!justFinished) return;
+    const timer = setTimeout(() => readOnlineCheckRef.current(), 1500);
+    return () => clearTimeout(timer);
+  }, [scanning]);
 
   useEffect(() => {
     if (!online?.progress?.running) return;

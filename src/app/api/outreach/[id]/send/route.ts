@@ -11,7 +11,9 @@ const STATUS: Record<MailErrorKind, number> = {
   do_not_contact: 422,
   not_configured: 503,
   daily_limit: 429,
+  outdated: 409,
   send_failed: 502,
+  sent_not_recorded: 500,
 };
 
 /**

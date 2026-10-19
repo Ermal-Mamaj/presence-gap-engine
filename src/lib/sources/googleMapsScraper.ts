@@ -205,6 +205,7 @@ export const googleMapsScraperSource: BusinessSource = {
       });
 
       const lists: Listing[][] = [];
+      let lastError: unknown = null;
       for (const [i, query] of plan.queries.entries()) {
         if (i > 0) await page.waitForTimeout(PAUSE_BETWEEN_SEARCHES_MS);
         try {
@@ -212,9 +213,12 @@ export const googleMapsScraperSource: BusinessSource = {
         } catch (err) {
           // One search failing (a timeout, a changed page) shouldn't lose the others.
           if (plan.queries.length === 1) throw err;
+          lastError = err;
           lists.push([]);
         }
       }
+      // Every search failing (a captcha, a changed layout) is a failed scan, not an empty town.
+      if (lastError && lists.every((list) => list.length === 0)) throw lastError;
 
       const businesses: RawBusiness[] = [];
       for (const item of mergeListings(lists, plan.total)) {

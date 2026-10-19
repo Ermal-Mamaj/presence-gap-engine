@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { fromStoredSignal } from "./detect";
 import { citableSignals, OutreachError } from "./outreach";
+import { isAnyBusiness } from "./sources/anyBusiness";
 import {
   CHANNEL_LABEL,
   DEFAULT_LANGUAGE,
@@ -138,7 +139,8 @@ export async function draftFromTemplate(
 
   const values = {
     name: lead.name,
-    business_type: lead.campaign.niche,
+    // "Anything" isn't a business type: a template that names one is skipped for that campaign.
+    business_type: isAnyBusiness(lead.campaign.niche) ? null : lead.campaign.niche,
     area: lead.campaign.region,
     website: lead.website,
   };
