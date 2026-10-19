@@ -21,6 +21,8 @@ export interface ReviewCard {
   phone: string | null;
   email: string | null;
   emailFromSite: boolean;
+  /** The email, or its whole domain, is on the do-not-contact list. */
+  doNotContact: boolean;
   facebook: string | null;
   instagram: string | null;
   followUpAt: Date | null;
@@ -51,6 +53,10 @@ export async function reviewQueue(prisma: PrismaClient, campaignId: string): Pro
     orderBy: { score: "desc" },
   });
 
+  const blocked = new Set((await prisma.doNotContact.findMany({ select: { value: true } })).map((b) => b.value));
+  const onList = (email: string | null) =>
+    Boolean(email) && (blocked.has(email!.toLowerCase()) || blocked.has(email!.toLowerCase().split("@")[1] ?? ""));
+
   const queue: ReviewQueue = { ready: [], needsDraft: [], sent: [] };
   for (const lead of leads) {
     const gaps = citableSignals(lead.signals.map(fromStoredSignal)).sort((a, b) => b.severity - a.severity);
@@ -65,6 +71,7 @@ export async function reviewQueue(prisma: PrismaClient, campaignId: string): Pro
       phone: lead.phone,
       email: lead.email,
       emailFromSite: lead.emailFromSite,
+      doNotContact: onList(lead.email),
       facebook: lead.facebook,
       instagram: lead.instagram,
       followUpAt: lead.followUpAt,
