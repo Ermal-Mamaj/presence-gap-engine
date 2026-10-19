@@ -7,6 +7,7 @@ import {
   ScanConflictError,
 } from "@/lib/scan";
 import { getSource } from "@/lib/sources";
+import { configuredProvider, DEFAULT_CHECK_LIMIT, runOnlineCheck } from "@/lib/onlineCheck";
 
 /**
  * Give the scan room where the platform honours it. A campaign can return 60
@@ -25,8 +26,17 @@ export const maxDuration = 300;
  * missing campaign, 409 when another scan holds it. Only the scan body is
  * deferred, via `after`, which runs it once the response has been sent.
  */
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  // { "checkOnline": true } also runs the online check once the scan has succeeded.
+  const body: unknown = await req.json().catch(() => ({}));
+  const checkOnline = Boolean(body && typeof body === "object" && (body as { checkOnline?: unknown }).checkOnline === true);
+  if (checkOnline && !configuredProvider()) {
+    return NextResponse.json(
+      { error: "No search provider is set up. Set GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY in .env." },
+      { status: 503 }
+    );
+  }
 
   let claim;
   try {
@@ -48,6 +58,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       // executeCampaignScan already recorded this on the ScanRun and the
       // campaign; nothing is listening for the rejection, so log and stop.
       console.error(`Scan ${claim.scanId} failed`, err);
+      return; // no new leads to check
+    }
+    if (!checkOnline) return;
+    try {
+      await runOnlineCheck(prisma, id, DEFAULT_CHECK_LIMIT);
+    } catch (err) {
+      console.error(`Online check after the scan of campaign ${id} failed`, err);
     }
   });
 

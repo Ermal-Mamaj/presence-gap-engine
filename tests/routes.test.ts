@@ -190,6 +190,55 @@ describe("POST /api/campaigns/[id]/run", () => {
   });
 });
 
+describe("POST /api/campaigns/[id]/run with checkOnline", () => {
+  it("refuses at once, starting nothing, when no search provider is set up", async () => {
+    const { id } = await newCampaign();
+    const res = await run.POST(request("POST", { checkOnline: true }), params(id));
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toContain("GROQ_API_KEY");
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id } })).status).not.toBe("RUNNING");
+  });
+
+  it("checks the new leads online once the scan has succeeded", async () => {
+    vi.stubEnv("GROQ_API_KEY", "gsk-test");
+    const searches: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        searches.push(JSON.parse(String(init.body)).messages[0].content);
+        return Response.json({ choices: [{ message: { content: "NONE" } }] });
+      })
+    );
+    try {
+      const { id } = await newCampaign();
+      expect((await run.POST(request("POST", { checkOnline: true }), params(id))).status).toBe(202);
+      await runPendingAfter();
+      const saved = await prisma.business.findFirstOrThrow({ where: { campaignId: id } });
+      expect(saved).toMatchObject({ name: "Klinika", onlineCheck: "none" });
+      expect(searches).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("is a plain scan without it", async () => {
+    vi.stubEnv("GROQ_API_KEY", "gsk-test");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      const { id } = await newCampaign();
+      await run.POST(request("POST", {}), params(id));
+      await runPendingAfter();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect((await prisma.business.findFirstOrThrow({ where: { campaignId: id } })).onlineCheck).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe("GET /api/campaigns/[id]/export", () => {
   it("downloads a CSV named after the campaign, with the formula guard applied", async () => {
     const { id } = await newCampaign({ name: "Tirana dentists" });
