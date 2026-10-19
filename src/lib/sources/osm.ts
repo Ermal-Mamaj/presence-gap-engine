@@ -1,3 +1,4 @@
+import { ANY_BUSINESS_TAGS, isAnyBusiness } from "./anyBusiness";
 import { fetchOverpass, sharedGeocoder } from "./osmClient";
 import type { BusinessSource, RawBusiness, SearchBox } from "./types";
 
@@ -71,21 +72,24 @@ const NICHE_TAGS: Record<string, string[]> = {
   "real estate": ["office=estate_agent"],
 };
 
-function buildOverpassQuery(bbox: [string, string, string, string], tags: string[]) {
+export function buildOverpassQuery(bbox: [string, string, string, string], tags: string[], max = 200) {
   // boundingbox from Nominatim is [south, north, west, east]
   const [south, north, west, east] = bbox;
   const bboxStr = `${south},${west},${north},${east}`;
   const clauses = tags
     .map((tag) => {
       const [k, v] = tag.split("=");
-      return `node[${JSON.stringify(k)}=${JSON.stringify(v)}](${bboxStr});way[${JSON.stringify(k)}=${JSON.stringify(v)}](${bboxStr});`;
+      // "shop=*" is any shop. Only named elements can become leads.
+      const filter = v === "*" ? `[${JSON.stringify(k)}]["name"]` : `[${JSON.stringify(k)}=${JSON.stringify(v)}]`;
+      return `node${filter}(${bboxStr});way${filter}(${bboxStr});`;
     })
     .join("\n");
-  return `[out:json][timeout:25];(${clauses});out center tags 200;`;
+  return `[out:json][timeout:${max > 200 ? 60 : 25}];(${clauses});out center tags ${max};`;
 }
 
 // One OSM tag, as OSM writes it: "shop=optician", "healthcare=physiotherapist".
 const RAW_TAG = /^[a-z][a-z0-9_:]*=[a-z0-9_:-]+$/i;
+const ANY_BUSINESS_MAX = 400;
 const MAX_RAW_TAGS = 5;
 
 /**
@@ -94,6 +98,7 @@ const MAX_RAW_TAGS = 5;
  * business type the table doesn't know. Empty when neither applies.
  */
 export function tagsForNiche(niche: string): string[] {
+  if (isAnyBusiness(niche)) return ANY_BUSINESS_TAGS;
   const key = niche.trim().toLowerCase();
   // Own keys only: "constructor" is not a niche.
   const known = (k: string) => (Object.hasOwn(NICHE_TAGS, k) ? NICHE_TAGS[k] : undefined);
@@ -166,7 +171,8 @@ export const osmSource: BusinessSource = {
       throw new Error(`Could not geocode region "${region}". Try a more specific place name.`);
     }
 
-    const query = buildOverpassQuery(geo.boundingbox, tags);
+    // "Anything" asks for many kinds at once, so it may return more.
+    const query = buildOverpassQuery(geo.boundingbox, tags, isAnyBusiness(niche) ? ANY_BUSINESS_MAX : 200);
     const elements = await fetchOverpass(query);
 
     const businesses: RawBusiness[] = [];

@@ -47,9 +47,13 @@ Two pluggable sources behind a common interface (`src/lib/sources/types.ts`):
   block the IP running it. It's included because it gives much richer data
   (most OSM entries lack a `website` tag even when the business has one),
   but keep volumes small and infrequent if you use it. The code is capped at
-  40 listings per run by design.
+  40 listings per run by design (100 for *anything*, below). It needs a
+  Chromium browser: set `PLAYWRIGHT_CHROMIUM_PATH` to an installed Chrome or
+  Edge (`C:/Program Files/Google/Chrome/Application/chrome.exe` on Windows).
 
 The niche is either a term the OSM adapter knows (about 65, from "dentist" to "driving school", plural accepted) or, for any other business type, OpenStreetMap tags given directly: `shop=optician`, or up to five separated by commas. Tags are validated before they reach the Overpass query.
+
+**Anything** (also *any business*, *all*, *çdo biznes*, *të gjitha*) is every common kind of local business at once (`src/lib/sources/anyBusiness.ts`), for a campaign that wants a whole town. On Google Maps it runs one search per common type (24, from restaurants to driving schools; banks, fuel stations and chains are left out), reads up to 8 places from each, and opens at most 100, taken from each search in turn so every type is represented, each place once however many searches found it. On OpenStreetMap it asks for every named shop, craft and office and the amenities worth a pitch, up to 400. Before this, *Anything* went to Google as typed and found 7 places in Suharekë.
 
 Adding a new source means implementing `BusinessSource` in
 `src/lib/sources/` and registering it in `src/lib/sources/index.ts` — nothing
