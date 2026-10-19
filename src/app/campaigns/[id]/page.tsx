@@ -470,6 +470,13 @@ export default function CampaignDetailPage() {
                   : `${campaign.businesses.length} leads`}
               </span>
 
+              <Link
+                href={`/campaigns/${id}/review`}
+                className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900"
+              >
+                Review &amp; send
+              </Link>
+
               <span className="inline-flex overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
                 {(["table", "map"] as const).map((v) => (
                   <button

@@ -330,3 +330,26 @@ describe("templates API", () => {
     expect(await made.json()).toMatchObject({ channel: "phone", body: "Mirëdita, flas për Klinika", templateId: expect.any(String) });
   });
 });
+
+describe("review queue and draft edits", () => {
+  it("lists a campaign's queue, and saves edits to an unsent draft but not a sent one", async () => {
+    const review = await import("@/app/api/campaigns/[id]/review/route");
+    const draftRoute = await import("@/app/api/outreach/[id]/route");
+    expect((await review.GET(request("GET"), params("nope"))).status).toBe(404);
+
+    const { id: campaignId } = await newCampaign();
+    const { id } = await newLead(campaignId, {
+      signals: { create: [{ key: "no_website", label: "No website found", severity: 40 }] },
+      outreach: { create: [{ subject: "s", openLine: "o", body: "b" }] },
+    });
+    const queue = await (await review.GET(request("GET"), params(campaignId))).json();
+    expect(queue.ready.map((c: { leadId: string }) => c.leadId)).toEqual([id]);
+
+    const draftId = queue.ready[0].draft.id;
+    expect((await draftRoute.PATCH(request("PATCH", { body: "" }), params(draftId))).status).toBe(400);
+    const saved = await draftRoute.PATCH(request("PATCH", { subject: "Better", body: "Edited" }), params(draftId));
+    expect(saved.status).toBe(200);
+    await sent.POST(request("POST", {}), params(draftId));
+    expect((await draftRoute.PATCH(request("PATCH", { body: "Late edit" }), params(draftId))).status).toBe(409);
+  });
+});
