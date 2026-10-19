@@ -110,7 +110,7 @@ export async function updateLead(prisma: PrismaClient, id: string, update: LeadU
 export async function markOutreachSent(
   prisma: PrismaClient,
   outreachId: string,
-  options: { now?: Date; today?: string } = {}
+  options: { now?: Date; today?: string; sentVia?: string; emailMessageId?: string | null } = {}
 ) {
   const now = options.now ?? new Date();
   // The day it was sent where the user is; the server's UTC day can be a day
@@ -126,7 +126,11 @@ export async function markOutreachSent(
 
     // Each write is conditional on the state it changes, so two marks racing
     // (a double click) record one send, one stage move and one history row.
-    await tx.outreach.updateMany({ where: { id: outreachId, sentAt: null }, data: { sentAt: now } });
+    // How it was sent goes in the same write, so a send is never half recorded.
+    await tx.outreach.updateMany({
+      where: { id: outreachId, sentAt: null },
+      data: { sentAt: now, ...(options.sentVia ? { sentVia: options.sentVia, emailMessageId: options.emailMessageId ?? null } : {}) },
+    });
     // One conditional move per starting stage, so the history row records the
     // stage the lead was actually in at the moment it moved, not the one read
     // at the start of the transaction.

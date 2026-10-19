@@ -84,7 +84,7 @@ export function buildOverpassQuery(bbox: [string, string, string, string], tags:
       return `node${filter}(${bboxStr});way${filter}(${bboxStr});`;
     })
     .join("\n");
-  return `[out:json][timeout:${max > 200 ? 60 : 25}];(${clauses});out center tags ${max};`;
+  return `[out:json][timeout:${max > 200 ? 40 : 25}];(${clauses});out center tags ${max};`;
 }
 
 // One OSM tag, as OSM writes it: "shop=optician", "healthcare=physiotherapist".

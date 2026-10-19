@@ -192,3 +192,14 @@ describe("editing templates", () => {
     await expect(deleteTemplate(prisma, "nope")).rejects.toBeInstanceOf(TemplateNotFoundError);
   });
 });
+
+describe("draftFromTemplate: a campaign for anything", () => {
+  it("doesn't call the business 'anything', and uses a template that doesn't name a type", async () => {
+    await prisma.campaign.update({ where: { id: campaignId }, data: { niche: "Anything" } });
+    await template({ body: "Pyetje për {{business_type}} në {{area}}" }); // needs a type: skipped
+    const plain = await template({ body: "Përshëndetje {{name}}" });
+    const draft = await draftFromTemplate(prisma, await lead("Furra Pashtriku"), "email");
+    expect(draft.templateId).toBe(plain.id);
+    expect(draft.body).not.toMatch(/anything/i);
+  });
+});

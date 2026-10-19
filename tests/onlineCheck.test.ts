@@ -467,3 +467,38 @@ describe("runOnlineCheck", () => {
     await expect(runOnlineCheck(prisma, campaignId)).rejects.toThrow(/GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY/);
   });
 });
+
+describe("problems found in review", () => {
+  it("finds the first of two numbers listed together", () => {
+    const first = { ...target, phone: "044 123 456" };
+    const html = "<p>Tel: 044 123 456 / 069 123 4567</p>";
+    expect(matchPage(first, { url: "https://x.al", html }).phone).toBe(true);
+    expect(matchPage({ ...target, phone: "069 123 4567" }, { url: "https://x.al", html }).phone).toBe(true);
+    expect(matchPage({ ...target, phone: "069 999 0000" }, { url: "https://x.al", html }).phone).toBe(false);
+  });
+
+  it("leaves 'anything' out of what it asks a search provider", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(String(init.body));
+        return Response.json({ results: [], choices: [{ message: { content: "NONE" } }] });
+      })
+    );
+    const anything = { ...target, niche: "Anything" };
+    await tavilyProvider("k").search(anything);
+    await groqProvider("k").search(anything);
+    expect(bodies.join(" ")).not.toMatch(/anything/i);
+    await tavilyProvider("k").search(target);
+    expect(bodies.at(-1)).toContain("dentist");
+  });
+
+  it("treats an answer that isn't JSON as a failed search, so the next provider can answer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>Sign in to the wifi</html>", { status: 200 })));
+    await expect(tavilyProvider("k").search(target)).rejects.toMatchObject({ busy: true });
+    const next = { name: "tavily", search: async () => ["https://arberi.al"] };
+    const first = { name: "groq", search: async () => groqProvider("k").search(target) };
+    expect(await fallbackProvider([first, next], () => 0).search(target)).toEqual(["https://arberi.al"]);
+  });
+});

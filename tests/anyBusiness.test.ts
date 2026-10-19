@@ -61,3 +61,11 @@ describe("OpenStreetMap: searching for anything", () => {
     expect(buildOverpassQuery(["1", "2", "3", "4"], ["amenity=dentist"])).toContain("out center tags 200;");
   });
 });
+
+describe("OpenStreetMap: the heavy query", () => {
+  it("asks the server for no longer than the client waits for it", () => {
+    // The client gives up on an Overpass attempt after 40s; a longer server timeout only wastes the attempt.
+    const query = buildOverpassQuery(["1", "2", "3", "4"], ["shop=*"], 400);
+    expect(query).toContain("[timeout:40]");
+  });
+});

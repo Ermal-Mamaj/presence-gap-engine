@@ -99,7 +99,10 @@ async function draftTopLeadsNow(
   });
 
   const outcome: BulkDraftOutcome = { selected: leads.length, drafted: 0, failed: [] };
-  await mapWithConcurrency(leads, BULK_CONCURRENCY, async (lead) => {
+  // Templates are filled in memory, and rotate by how often each was used: three at once would
+  // all read the same counts and pick the same template. Only the Claude API gains from concurrency.
+  const concurrency = draftSource() === "claude" ? BULK_CONCURRENCY : 1;
+  await mapWithConcurrency(leads, concurrency, async (lead) => {
     if (outcome.stoppedBecause) return;
     try {
       await draftForLead(prisma, lead, { deps: options.deps });

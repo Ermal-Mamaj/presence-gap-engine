@@ -88,7 +88,9 @@ export type MailErrorKind =
   | "do_not_contact"
   | "not_configured"
   | "daily_limit"
-  | "send_failed";
+  | "outdated"
+  | "send_failed"
+  | "sent_not_recorded";
 
 export class MailError extends Error {
   constructor(
@@ -109,17 +111,36 @@ export function normalizeBlockValue(raw: string): string | null {
   return /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(domain) ? domain : null;
 }
 
+/**
+ * Every do-not-contact entry that covers an address: the address itself, its
+ * domain, and the domains above it (blocking klinika.al blocks info@mail.klinika.al).
+ */
+export function blockCandidates(email: string): string[] {
+  const address = email.toLowerCase();
+  const labels = (address.split("@")[1] ?? "").split(".").filter(Boolean);
+  const domains = labels.slice(0, -1).map((_, i) => labels.slice(i).join("."));
+  return [address, ...domains];
+}
+
 /** Whether an address, or its domain, is on the do-not-contact list. */
 export async function isDoNotContact(prisma: PrismaClient, email: string): Promise<boolean> {
-  const address = email.toLowerCase();
-  const domain = address.split("@")[1] ?? "";
-  return (await prisma.doNotContact.count({ where: { value: { in: [address, domain] } } })) > 0;
+  return (await prisma.doNotContact.count({ where: { value: { in: blockCandidates(email) } } })) > 0;
 }
 
 // Drafts being sent right now, for the whole process: a double click or a
 // second tab must not send the same email twice.
 const globalForMail = globalThis as unknown as { sendingDrafts?: Set<string> };
 const sending = () => (globalForMail.sendingDrafts ??= new Set<string>());
+
+// One send at a time for the whole process, from the daily-limit check to the
+// record of the send. Two different drafts sent at once (two tabs) would
+// otherwise both read a count below the limit, and both go out.
+const globalForQueue = globalThis as unknown as { sendQueue?: Promise<unknown> };
+function oneAtATime<T>(task: () => Promise<T>): Promise<T> {
+  const run = (globalForQueue.sendQueue ?? Promise.resolve()).then(task, task);
+  globalForQueue.sendQueue = run.catch(() => undefined);
+  return run;
+}
 
 export interface SendOutcome {
   dryRun: boolean;
@@ -153,6 +174,11 @@ export async function sendDraftEmail(
     if (!draft) throw new MailError("not_found", "Draft not found");
     if (draft.sentAt) throw new MailError("already_sent", "This draft has already been sent.");
     if (draft.channel !== "email") throw new MailError("not_email", "Only an email draft can be sent from the app.");
+    // The web check found a site after this was written: "you have no website" is no longer true.
+    const lead = draft.business;
+    if (lead.onlineCheck === "found" && lead.onlineCheckedAt && draft.createdAt < lead.onlineCheckedAt) {
+      throw new MailError("outdated", "A website was found for this business after this draft was written. Write a new draft first.");
+    }
     const to = normalizeEmail(draft.business.email);
     if (!to) throw new MailError("no_address", "This lead has no usable email address.");
     if (await isDoNotContact(prisma, to)) {
@@ -164,13 +190,6 @@ export async function sendDraftEmail(
     if (missing.length) {
       throw new MailError("not_configured", `Sending isn't set up. Set ${missing.join(", ")} in .env.`);
     }
-    if ((await sentInLastDay(prisma, now)) >= config.dailyLimit) {
-      throw new MailError(
-        "daily_limit",
-        `The limit of ${config.dailyLimit} emails per 24 hours is reached. Try again later, or raise MAIL_DAILY_LIMIT.`
-      );
-    }
-
     const subject = draft.subject ?? "";
     const text = `${draft.body}\n\n${config.optOut}`;
     const message = {
@@ -184,17 +203,33 @@ export async function sendDraftEmail(
 
     const transport =
       options.transport ?? nodemailer.createTransport(config.dryRun ? { jsonTransport: true } : config.smtpUrl!);
-    let messageId: string | null;
-    try {
-      messageId = (await transport.sendMail(message)).messageId ?? null;
-    } catch (err) {
-      throw new MailError("send_failed", `The mail server refused it: ${err instanceof Error ? err.message : "unknown error"}`);
-    }
-    if (config.dryRun) return { dryRun: true, ...outcome, messageId: null };
+    return oneAtATime(async () => {
+      if ((await sentInLastDay(prisma, now)) >= config.dailyLimit) {
+        throw new MailError(
+          "daily_limit",
+          `The limit of ${config.dailyLimit} emails per 24 hours is reached. Try again later, or raise MAIL_DAILY_LIMIT.`
+        );
+      }
+      let messageId: string | null;
+      try {
+        messageId = (await transport.sendMail(message)).messageId ?? null;
+      } catch (err) {
+        throw new MailError("send_failed", `The mail server refused it: ${err instanceof Error ? err.message : "unknown error"}`);
+      }
+      if (config.dryRun) return { dryRun: true, ...outcome, messageId: null };
 
-    await markOutreachSent(prisma, outreachId, { now, today: options.today });
-    await prisma.outreach.update({ where: { id: outreachId }, data: { sentVia: "app_email", emailMessageId: messageId } });
-    return { dryRun: false, ...outcome, messageId };
+      // Sent and recorded in one write. If the record fails after a real send, say so:
+      // a plain error would invite a retry, and the business would get the email twice.
+      try {
+        await markOutreachSent(prisma, outreachId, { now, today: options.today, sentVia: "app_email", emailMessageId: messageId });
+      } catch {
+        throw new MailError(
+          "sent_not_recorded",
+          `The email to ${to} WAS sent, but could not be saved as sent. Don't send it again: mark the draft as sent by hand.`
+        );
+      }
+      return { dryRun: false, ...outcome, messageId };
+    });
   } finally {
     lock.delete(outreachId);
   }

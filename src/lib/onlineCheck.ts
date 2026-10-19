@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { deferWebsiteCheck, websiteNeedsFetch } from "./detect";
 import { safeFetchPage, type FetchedPage } from "./safeFetch";
+import { isAnyBusiness } from "./sources/anyBusiness";
 import { computeScore } from "./score";
 
 /**
@@ -82,11 +83,17 @@ async function postJson(url: string, key: string, body: object, label: string): 
     const retryAfterMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
     throw new SearchError(`${label} error ${res.status}: ${detail.slice(0, 200)}`, limited, retryAfterMs);
   }
-  return res.json();
+  // A 200 with an HTML or empty body (a captive portal, a proxy error page) is a failed search,
+  // not a crash: the next provider can still answer.
+  try {
+    return await res.json();
+  } catch {
+    throw new SearchError(`${label} answered with something that isn't JSON`, true);
+  }
 }
 
 function query(target: CheckTarget): string {
-  return `"${target.name}" ${target.niche} ${target.area}`;
+  return [`"${target.name}"`, typeOf(target), target.area].filter(Boolean).join(" ");
 }
 
 /** Tavily's search API: a ranked list of result URLs, 1 credit per search. */
@@ -111,11 +118,16 @@ export function urlsIn(text: string): string[] {
   return [...text.matchAll(/https?:\/\/[^\s<>"'`)\]【】\\]+/g)].map((m) => m[0].replace(/[.,;:!?]+$/, ""));
 }
 
+/** The business type, for a search: left out for "anything", which isn't a type. */
+function typeOf(target: CheckTarget): string {
+  return isAnyBusiness(target.niche) ? "" : target.niche;
+}
+
 /** What a model with web search is asked: the lead's facts, and URLs back. */
 function searchPrompt(target: CheckTarget): string {
   const facts = [
     `Name: ${target.name}`,
-    `Type: ${target.niche}`,
+    typeOf(target) && `Type: ${typeOf(target)}`,
     `Area: ${target.area}`,
     target.address && `Address: ${target.address}`,
     target.phone && `Phone: ${target.phone}`,
@@ -322,7 +334,8 @@ export function matchPage(
   const key = phoneKey(target.phone);
   const phoneOnPage =
     key !== null &&
-    [...page.html.matchAll(/\+?\d[\d\s().\-/]{6,}\d/g)].some((m) => m[0].replace(/\D/g, "").endsWith(key));
+    // Numbers in a list are separated by "/" or "-", so one run can hold several: look anywhere in it.
+    [...page.html.matchAll(/\+?\d[\d\s().\-/]{6,}\d/g)].some((m) => m[0].replace(/\D/g, "").includes(key));
   if (phoneOnPage) evidence.push(`its phone number (${target.phone}) is on the page`);
 
   // A name made only of generic words ("Klinikë Dentare", "Dentist në Tiranë") is on

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { contactChannels } from "./contacts";
 import { fromStoredSignal } from "./detect";
+import { blockCandidates } from "./mail";
 import { citableSignals } from "./outreach";
 
 /**
@@ -56,8 +57,7 @@ export async function reviewQueue(prisma: PrismaClient, campaignId: string): Pro
   });
 
   const blocked = new Set((await prisma.doNotContact.findMany({ select: { value: true } })).map((b) => b.value));
-  const onList = (email: string | null) =>
-    Boolean(email) && (blocked.has(email!.toLowerCase()) || blocked.has(email!.toLowerCase().split("@")[1] ?? ""));
+  const onList = (email: string | null) => Boolean(email) && blockCandidates(email!).some((value) => blocked.has(value));
 
   const queue: ReviewQueue = { ready: [], needsDraft: [], sent: [] };
   for (const lead of leads) {
