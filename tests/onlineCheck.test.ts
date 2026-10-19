@@ -92,6 +92,15 @@ describe("matchPage", () => {
     expect(matchPage({ ...target, name: "Klinikë Dentare" }, { url: "https://klinikakristi.al", html: "Klinikë Dentare Kristi" }).name).toBe(false);
   });
 
+  it("doesn't take a short word inside another word, the type of business, or the town for the lead", () => {
+    // Found live: Pizzeria ERA in Suharekë was "found" at pizzeriaguri.blogspot.com, a different pizzeria.
+    const era = { name: "Pizzeria ERA", phone: "+38344624696", address: "Suhareke 23000", niche: "Anything", area: "Suharek, Kosovo" };
+    const guri = { url: "http://pizzeriaguri.blogspot.com/", html: "Pizzeria Guri Peqan Suhareke, Therande, Restaurant Pizzeria Guri" };
+    expect(matchPage(era, guri)).toMatchObject({ strong: false, name: false, ownDomain: false });
+    // ...while the real one, with "era" as a word of its own, still matches.
+    expect(matchPage(era, { url: "https://pizzeriaera.com", html: "Pizzeria ERA, Suharekë" })).toMatchObject({ name: true });
+  });
+
   it("is strong with the name and the street, or a domain made of the name; weak with the name alone", () => {
     expect(matchPage(target, { url: "https://x.al", html: "Arbëri, Rruga Myslym Shyri" }).strong).toBe(true);
     expect(matchPage(target, { url: "https://arberi.al", html: "Arbëri" }).strong).toBe(true);
