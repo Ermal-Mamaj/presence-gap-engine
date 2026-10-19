@@ -109,7 +109,7 @@ export function buildPrompt(target: OutreachTarget, signals: DetectedSignal[], o
   const rating = typeof target.rating === "number" && target.rating > 0 ? target.rating : null;
   const reviews = typeof target.reviewCount === "number" && target.reviewCount > 0 ? target.reviewCount : null;
 
-  return `You are helping a small web-services freelancer reach out to a local business.
+  return `You are helping a small web-services freelancer reach out to a local business. Write the whole message in ${language}.
 
 Business: ${target.name}
 ${target.address ? `Address: ${target.address}\n` : ""}${target.website ? `Website: ${target.website}\n` : ""}${rating !== null ? `Rating: ${rating}\n` : ""}${reviews !== null ? `Reviews: ${reviews}\n` : ""}
@@ -117,7 +117,7 @@ Observed gaps (publicly visible, true, specific):
 ${signalLines}
 
 ${CHANNEL_RULES[channel]}
-- Open by naming the ONE most striking gap in concrete terms (e.g. "your clinic doesn't come up on Google and has no website" — not vague like "improve your online presence").
+- Open by naming the ONE most striking gap in concrete terms, taken from the list above (e.g. "your clinic's listing has no website", not vague like "improve your online presence").
 - Sell the outcome (customers can find and message them), not "a website".
 - Offer to fix it, not a hard pitch. End with a low-friction ask (a quick reply or call).
 - Do not invent facts not present in the signals above.

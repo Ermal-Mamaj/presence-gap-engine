@@ -204,3 +204,15 @@ describe("draftOutreach", () => {
     expect(MAX_DRAFT_TOKENS).toBeGreaterThan(worstCaseTokens);
   });
 });
+
+describe("buildPrompt: no claim the app never checked", () => {
+  it("names the language up front as well as at the end", () => {
+    const prompt = buildPrompt({ name: "Klinika" }, [verified], { language: "sq" });
+    expect(prompt.split("\n")[0]).toContain("Write the whole message in Albanian.");
+    expect(prompt).toContain("Write everything in Albanian.");
+  });
+
+  it("gives no example a model could copy as a fact, such as not showing up on Google", () => {
+    expect(buildPrompt({ name: "Klinika" }, [verified])).not.toMatch(/google/i);
+  });
+});
