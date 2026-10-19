@@ -117,6 +117,16 @@ Coverage is thin, which is the point of showing it. In a sample of 80 dentists
 in Tirana on OpenStreetMap, 10 listed a phone, 7 an email and 3 a Facebook
 page. A lead with nothing to go on gets a web-search link on its page.
 
+## The online check
+
+A business with no website on OpenStreetMap often has one. **Check offline leads online** on a campaign (`src/lib/onlineCheck.ts`) searches the web for up to 20 leads whose site status is *None listed*, one at a time, through Groq’s `browser_search` or Tavily, whichever key is set (`.env.example`). The search only suggests pages: directories, maps and social sites are dropped, and each remaining candidate is fetched through the same guarded fetcher as website checks and matched against the lead. Its phone (last 8 digits, however written), or its name together with its street or a domain made of its name, is a match; generic words ("Klinika", "Dental") and the city’s name don’t count as the name. The verdict, with its evidence, is shown on the lead:
+
+- **Found:** the page becomes the lead’s website, *No website found* is no longer claimed, and the next scan checks the site like any other. An unsent draft written before is flagged on its review card.
+- **Not online:** nothing matched; the lead really looks offline.
+- **Unsure:** only the name matched; flagged for a person to look at.
+
+A verdict is reused for 30 days. A rate-limited search is retried once after 20 seconds; if it fails again, the run stops and says why, keeping the verdicts so far.
+
 ## Website checks and certainty
 
 Business websites come from data anyone can edit, so `src/lib/safeFetch.ts` treats every URL as hostile: http(s) only, no credentials, only ports 80/443/8080/8443, every resolved IP checked at connect time (loopback, private, link-local, carrier-grade NAT, multicast, reserved and the IPv6/NAT64/6to4 equivalents are refused), redirects followed manually and re-validated per hop (max 5), one total deadline of 8 seconds covering the body, a 1 MiB size cap that also applies after decompression, and at most 8 requests in flight process-wide. Pages are read as text and never executed.

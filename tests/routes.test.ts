@@ -353,3 +353,16 @@ describe("review queue and draft edits", () => {
     expect((await draftRoute.PATCH(request("PATCH", { body: "Late edit" }), params(draftId))).status).toBe(409);
   });
 });
+
+describe("online check route", () => {
+  it("reports no provider, refuses to start without one, and checks its input", async () => {
+    const check = await import("@/app/api/campaigns/[id]/online-check/route");
+    const { id } = await newCampaign();
+    expect(await (await check.GET(request("GET"), params(id))).json()).toEqual({ provider: null, progress: null });
+    expect((await check.POST(request("POST", { limit: 0 }), params(id))).status).toBe(400);
+    expect((await check.POST(request("POST", {}), params("nope"))).status).toBe(404);
+    const refused = await check.POST(request("POST", {}), params(id));
+    expect(refused.status).toBe(503);
+    expect((await refused.json()).error).toContain("GROQ_API_KEY or TAVILY_API_KEY");
+  });
+});

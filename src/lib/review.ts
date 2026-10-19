@@ -34,6 +34,8 @@ export interface ReviewCard {
     sentAt: Date | null;
     fromTemplate: boolean;
     createdAt: Date;
+    /** Written before the web check found a site, so it may say the business has none. */
+    outdated: boolean;
   } | null;
 }
 
@@ -84,6 +86,10 @@ export async function reviewQueue(prisma: PrismaClient, campaignId: string): Pro
             sentAt: latest.sentAt,
             fromTemplate: latest.templateId !== null,
             createdAt: latest.createdAt,
+            outdated:
+              lead.onlineCheck === "found" &&
+              lead.onlineCheckedAt !== null &&
+              latest.createdAt.getTime() < lead.onlineCheckedAt.getTime(),
           }
         : null,
     };

@@ -109,6 +109,12 @@ model Business {
   sourceRef     String?  // id/url from the originating source, for provenance
   dedupeKey     String   // stable identity within a campaign, see src/lib/dedupe.ts
   websiteStatus WebsiteStatus @default(NEEDS_CHECK)
+  // The web search for a site the listing doesn't mention (src/lib/onlineCheck.ts):
+  // "found", "none" or "unsure"; the page that matched; why; and when.
+  onlineCheck         String?
+  onlineCheckUrl      String?
+  onlineCheckEvidence String?
+  onlineCheckedAt     DateTime?
   siteCheckedAt DateTime? // when a scan last fetched the current website; null = not yet
   lastSeenAt    DateTime @default(now()) // last scan that returned this business
 
