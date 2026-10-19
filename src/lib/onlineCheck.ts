@@ -268,7 +268,8 @@ const GENERIC = new Set(
   (
     "klinika klinike klinik dentare dentar dental dentist dentistry clinic studio studioja qendra qendr center centre " +
     "dr doktor shpk sh p k the and of restorant restaurant kafe cafe bar hotel salon sallon parukeri berber farmaci " +
-    "pharmacy shop dyqan market agjenci agency group grup ltd llc ne per"
+    "pharmacy shop dyqan market agjenci agency group grup ltd llc ne per " +
+    "pizzeria pizza kebab doner burger grill sweets lounge caffe coffee bistro pastry autoservis servis service barbershop barber fitness gym"
   ).split(" ")
 );
 
@@ -304,10 +305,10 @@ function phoneKey(phone: string | null | undefined): string | null {
 const STREET_WORDS = new Set(["rruga", "rr", "street", "str", "bulevardi", "blv", "lagjja", "lagja", "nr", "pallati"]);
 
 function streetTokens(address: string | null | undefined, area: string): string[] {
-  const skip = new Set([...STREET_WORDS, ...normalize(area).split(" ")]);
+  // The town's name is in every address there ("Suhareke 23000"), in any spelling.
   return normalize(address ?? "")
     .split(" ")
-    .filter((t) => t.length >= 4 && !skip.has(t) && !/^\d+$/.test(t));
+    .filter((t) => t.length >= 4 && !STREET_WORDS.has(t) && !isAreaWord(t, area) && !/^\d+$/.test(t));
 }
 
 /** What a page shows of the lead: each piece of evidence, in words. */
@@ -327,9 +328,12 @@ export function matchPage(
   // A name made only of generic words ("Klinikë Dentare", "Dentist në Tiranë") is on
   // countless pages, so it never counts; one with a short word of its own counts whole.
   const tokens = significantTokens(target.name, target.area);
+  // A short word counts only as a whole word: "era" is inside "Therande".
+  const words = ` ${text} `;
+  const hasWord = (t: string) => (t.length >= 5 ? text.includes(t) : words.includes(` ${t} `));
   const name =
     tokens.length > 0
-      ? tokens.every((t) => text.includes(t))
+      ? tokens.every(hasWord)
       : ownWords(target.name, target.area).length > 0 && text.includes(normalize(target.name));
   if (name) evidence.push(`its name "${target.name}" is on the page`);
 
