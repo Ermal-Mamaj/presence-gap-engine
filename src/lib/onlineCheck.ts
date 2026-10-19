@@ -35,7 +35,8 @@ export interface CheckTarget {
 // ---- Search providers ------------------------------------------------------
 
 export interface SearchProvider {
-  name: "groq" | "tavily";
+  /** "groq", "tavily", or both in the order they're tried, e.g. "groq + tavily". */
+  name: string;
   /** Candidate URLs for the business, best first. */
   search(target: CheckTarget): Promise<string[]>;
 }
@@ -66,7 +67,9 @@ async function postJson(url: string, key: string, body: object, label: string): 
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 200);
-    throw new SearchError(`${label} error ${res.status}: ${detail}`, res.status === 429 || res.status >= 500);
+    // 429 is a rate limit; Tavily answers 432 and 433 when a plan's credits run out.
+    const limited = res.status === 429 || res.status === 432 || res.status === 433 || res.status >= 500;
+    throw new SearchError(`${label} error ${res.status}: ${detail}`, limited);
   }
   return res.json();
 }
@@ -139,15 +142,58 @@ export function groqProvider(key: string): SearchProvider {
   };
 }
 
-/** The configured provider: Groq if GROQ_API_KEY is set, else Tavily with TAVILY_API_KEY, else none. */
+/** How long a provider that hit its limit is passed over before it is tried again. */
+export const REST_AFTER_LIMIT_MS = 60_000;
+
+/**
+ * Tries the providers in order. When one hits its rate limit or runs out of
+ * credits, the next takes over, and the one that hit it is passed over for a
+ * minute before it is tried again; one that fails another way (a rejected
+ * key) is passed over for good. If every provider is resting, the ones that
+ * will recover are tried anyway. The error, if all fail, names each failure
+ * and is busy if any of them was.
+ */
+export function fallbackProvider(providers: SearchProvider[], now: () => number = Date.now): SearchProvider {
+  const restingUntil = new Map<SearchProvider, number>();
+  const resting = (p: SearchProvider) => (restingUntil.get(p) ?? 0) > now();
+  return {
+    name: providers.map((p) => p.name).join(" + "),
+    async search(target) {
+      let candidates = providers.filter((p) => !resting(p));
+      if (candidates.length === 0) candidates = providers.filter((p) => restingUntil.get(p) !== Infinity);
+      const failures: SearchError[] = [];
+      for (const p of candidates) {
+        try {
+          const urls = await p.search(target);
+          restingUntil.delete(p);
+          return urls;
+        } catch (err) {
+          if (!(err instanceof SearchError)) throw err;
+          restingUntil.set(p, err.busy ? now() + REST_AFTER_LIMIT_MS : Infinity);
+          failures.push(err);
+        }
+      }
+      if (failures.length === 0) throw new SearchError("Every search provider failed; check the API keys in .env.");
+      throw new SearchError(
+        failures.map((f) => f.message).join("; "),
+        failures.some((f) => f.busy)
+      );
+    },
+  };
+}
+
+/**
+ * The configured provider: Groq with GROQ_API_KEY and Tavily with
+ * TAVILY_API_KEY. With both keys, Groq goes first (or Tavily, with
+ * ONLINE_CHECK_PROVIDER=tavily) and the other takes over when it hits a limit.
+ */
 export function configuredProvider(): SearchProvider | null {
   const groq = process.env.GROQ_API_KEY?.trim();
   const tavily = process.env.TAVILY_API_KEY?.trim();
-  const preferred = process.env.ONLINE_CHECK_PROVIDER?.trim().toLowerCase();
-  if (preferred === "tavily" && tavily) return tavilyProvider(tavily);
-  if (groq) return groqProvider(groq);
-  if (tavily) return tavilyProvider(tavily);
-  return null;
+  const providers = [groq && groqProvider(groq), tavily && tavilyProvider(tavily)].filter((p): p is SearchProvider => Boolean(p));
+  if (process.env.ONLINE_CHECK_PROVIDER?.trim().toLowerCase() === "tavily") providers.reverse();
+  if (providers.length === 0) return null;
+  return providers.length === 1 ? providers[0] : fallbackProvider(providers);
 }
 
 // ---- Matching ----------------------------------------------------------------
