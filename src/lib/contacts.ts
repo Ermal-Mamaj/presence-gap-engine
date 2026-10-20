@@ -28,15 +28,70 @@ export function normalizePhone(raw: string | null | undefined): string | undefin
   return (value.match(/\d/g)?.length ?? 0) >= 6 ? value : undefined;
 }
 
-/**
- * A WhatsApp chat link for a phone number, when the number is international
- * ("+355 69 …"). A local number ("069 …") has no country code to put in the
- * link, and guessing one would open a chat with a stranger.
- */
-export function whatsappLink(raw: string | null | undefined): string | undefined {
+// Country calling codes of the countries this tool is used in, and the
+// names a campaign's area is written with, with accents removed. A region
+// names its country ("Suharekë, Kosovo"); the first match wins.
+const COUNTRIES: { dial: string; names: string[] }[] = [
+  { dial: "383", names: ["kosovo", "kosova", "kosove"] },
+  { dial: "355", names: ["albania", "shqiperi"] },
+  { dial: "389", names: ["north macedonia", "macedonia", "maqedoni", "makedonij"] },
+  { dial: "382", names: ["montenegro", "mali i zi", "crna gora"] },
+  { dial: "381", names: ["serbia", "serbi", "srbija"] },
+  { dial: "30", names: ["greece", "greqi", "ellada"] },
+  { dial: "39", names: ["italy", "itali"] },
+  { dial: "49", names: ["germany", "gjermani", "deutschland"] },
+];
+
+const stripAccents = (s: string) => s.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
+
+/** The calling code of the country a region is in, when the region names it. */
+function dialCodeOfRegion(region: string): string | null {
+  const text = stripAccents(region);
+  return COUNTRIES.find((c) => c.names.some((name) => text.includes(name)))?.dial ?? null;
+}
+
+/** The calling code an international number starts with ("+383 49 …" → "383"), among the known ones. */
+function dialCodeOfNumber(raw: string): string | null {
   const phone = normalizePhone(raw);
-  if (!phone?.startsWith("+")) return undefined;
-  return `https://wa.me/${phone.replace(/\D/g, "")}`;
+  if (!phone?.startsWith("+")) return null;
+  const digits = phone.replace(/\D/g, "");
+  return COUNTRIES.find((c) => digits.startsWith(c.dial))?.dial ?? null;
+}
+
+/**
+ * The calling code to put in front of a campaign's local numbers: the country
+ * its area names, else the one most of its own international numbers share
+ * (at least three, and at least 60% of them). Null when neither is clear,
+ * since a wrong guess opens a chat with a stranger.
+ */
+export function campaignDialCode(region: string, phones: (string | null | undefined)[]): string | null {
+  const named = dialCodeOfRegion(region);
+  if (named) return named;
+  const counts = new Map<string, number>();
+  let international = 0;
+  for (const phone of phones) {
+    const dial = phone ? dialCodeOfNumber(phone) : null;
+    if (dial) counts.set(dial, (counts.get(dial) ?? 0) + 1);
+    if (phone && normalizePhone(phone)?.startsWith("+")) international++;
+  }
+  const [top, n] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+  return top && n >= 3 && n >= international * 0.6 ? top : null;
+}
+
+/**
+ * A WhatsApp chat link for a phone number. An international number ("+355 69 …")
+ * is used as it is. A local one ("069 …") has no country code, so it gets
+ * `dialCode`, the campaign's own country, in place of its leading 0; with no
+ * dialCode there is no link, since guessing opens a chat with a stranger.
+ */
+export function whatsappLink(raw: string | null | undefined, dialCode?: string | null): string | undefined {
+  const phone = normalizePhone(raw);
+  if (!phone) return undefined;
+  const digits = phone.replace(/\D/g, "");
+  if (phone.startsWith("+")) return `https://wa.me/${digits}`;
+  if (digits.startsWith("00")) return `https://wa.me/${digits.slice(2)}`; // 00383… is +383…
+  if (dialCode && digits.startsWith("0") && digits.length >= 8) return `https://wa.me/${dialCode}${digits.slice(1)}`;
+  return undefined;
 }
 
 export type SocialNetwork = "facebook" | "instagram";
