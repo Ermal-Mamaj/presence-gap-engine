@@ -129,6 +129,7 @@ The search only suggests pages: directories, maps and social sites are dropped, 
 
 - **Found:** a page on a domain made of its name (`arberi.al` for Arbëri) shows its phone, or its name and its street or city. The page becomes the lead’s website, *No website found* is no longer claimed, and the next scan checks the site like any other. An unsent draft written before is flagged on its review card.
 - **Not online:** nothing matched; the lead really looks offline.
+- **Only in directories:** its phone is on a page that lists 15 or more other numbers, which is a directory, and nothing looked like a site of its own. It counts as having no site, like *Not online*, and the page is kept so you can look. Known directories and the business registry (`arbk.org`) are skipped without being fetched.
 - **Unsure,** flagged for a person to look at: the phone or name and street are on a page elsewhere (often a directory listing; no list of directories is complete); a namesake domain doesn’t mention the street or city (MonDent in Tirana vs. `mondent.ba` in Bosnia); a site named after the lead didn’t load (perhaps its old site); or its name and street or city are on some page.
 
 A verdict is reused for 30 days. A rate-limited search is retried up to three times, after the wait the provider asked for (20 seconds if it didn’t say, at most 65); if it is still limited, the run stops and says why, keeping the verdicts so far.

@@ -586,7 +586,7 @@ export default function CampaignDetailPage() {
                 <span className="text-xs text-zinc-500 dark:text-zinc-400">
                   {online.progress.error
                     ? `Online check stopped: ${online.progress.error}`
-                    : `Online check: ${online.progress.found} found, ${online.progress.none} not online, ${online.progress.unsure} unsure.`}
+                    : `Online check: ${online.progress.found} found, ${online.progress.none + (online.progress.listed ?? 0)} with no site of their own, ${online.progress.unsure} unsure.`}
                 </span>
               )}
 
@@ -806,7 +806,7 @@ export default function CampaignDetailPage() {
 
 interface OnlineCheckState {
   provider: string | null;
-  progress: { running: boolean; total: number; done: number; found: number; none: number; unsure: number; error: string | null } | null;
+  progress: { running: boolean; total: number; done: number; found: number; none: number; unsure: number; listed?: number; error: string | null } | null;
 }
 
 /** What the web search concluded about a lead with no website listed. */
@@ -817,7 +817,13 @@ function OnlineNote({ verdict, url }: { verdict: string | null; url: string | nu
     host = url ? new URL(url).hostname : "";
   } catch {}
   const text =
-    verdict === "found" ? `Found online: ${host}` : verdict === "unsure" ? `Maybe online: ${host}, check it` : "Searched: not online";
+    verdict === "found"
+      ? `Found online: ${host}`
+      : verdict === "unsure"
+        ? `Maybe online: ${host}, check it`
+        : verdict === "listed"
+          ? `Only in directories (${host})`
+          : "Searched: not online";
   const tone = verdict === "unsure" ? "text-amber-700 dark:text-amber-400" : "text-zinc-500";
   return <p className={`mt-1 whitespace-nowrap text-xs ${tone}`}>{text}</p>;
 }
