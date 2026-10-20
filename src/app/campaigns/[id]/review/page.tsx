@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { normalizeEmail, normalizePhone, whatsappLink } from "@/lib/contacts";
+import { canTransition, type CrmStageName, isCrmStage } from "@/lib/crm";
 import { formatDay, formatTimestamp, localDay } from "@/lib/display";
 import { followUpDay } from "@/lib/leads";
 import { CHANNEL_LABEL, defaultChannel, DRAFT_CHANNELS, type DraftChannel, isDraftChannel } from "@/lib/outreachOptions";
@@ -53,6 +54,13 @@ interface Queue {
 }
 
 type Tab = "ready" | "needsDraft" | "sent";
+
+/** What happened after a message went out, as one click: the stage the lead moves to. */
+const REPLY_BUTTONS: { stage: CrmStageName; label: string; done: string }[] = [
+  { stage: "REPLIED", label: "They replied", done: "Marked as replied." },
+  { stage: "CONVERTED", label: "Became a client", done: "Marked as a client." },
+  { stage: "DEAD", label: "Not interested", done: "Marked as dead. It leaves this list; reopen it from the lead page." },
+];
 const TAB_LABEL: Record<Tab, string> = { ready: "Ready to send", needsDraft: "Needs a draft", sent: "Sent" };
 
 const BUTTON =
@@ -377,6 +385,25 @@ function CardDetail({
                 {card.followUpAt &&
                   ` · follow up ${formatDay(followUpDay(card.followUpAt))}${followUpDay(card.followUpAt) <= localDay() ? " (due)" : ""}`}
               </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-zinc-500">Stage: {card.crmStage.toLowerCase()}</span>
+                {REPLY_BUTTONS.filter((b) => isCrmStage(card.crmStage) && canTransition(card.crmStage, b.stage) && card.crmStage !== b.stage).map((b) => (
+                  <button
+                    key={b.stage}
+                    disabled={busy}
+                    className={BUTTON}
+                    onClick={() =>
+                      act(
+                        () =>
+                          call(`/api/leads/${card.leadId}/status`, { method: "PATCH", body: JSON.stringify({ crmStage: b.stage }) }, "Could not update the lead"),
+                        b.done
+                      )
+                    }
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
               <button
                 disabled={busy}
                 className={`${BUTTON} mt-3`}

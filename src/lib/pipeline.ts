@@ -11,6 +11,24 @@ export interface PipelineSummary {
   conversionRate: number | null;
 }
 
+/** The index in PIPELINE of the furthest stage a lead reached; a stepped-back move doesn't count. */
+export function furthestStage(lead: {
+  crmStage: CrmStageName;
+  stageChanges: { fromStage: CrmStageName; toStage: CrmStageName }[];
+}): number {
+  const changes = lead.stageChanges;
+  const kept = changes.filter((change, i) => {
+    const next = changes[i + 1];
+    const undone =
+      next !== undefined &&
+      next.fromStage === change.toStage &&
+      PIPELINE.indexOf(next.toStage) === PIPELINE.indexOf(change.toStage) - 1;
+    return !undone;
+  });
+  const stages = [lead.crmStage, ...kept.map((c) => c.toStage)];
+  return Math.max(0, ...stages.map((s) => PIPELINE.indexOf(s)));
+}
+
 /**
  * How far leads got, across all campaigns or one. "Reached" uses the furthest
  * stage in each lead's history, not only where it is now: a lead that
@@ -27,19 +45,7 @@ export async function pipelineSummary(prisma: PrismaClient, campaignId?: string)
     },
   });
 
-  const furthest = leads.map((lead) => {
-    const changes = lead.stageChanges;
-    const kept = changes.filter((change, i) => {
-      const next = changes[i + 1];
-      const undone =
-        next !== undefined &&
-        next.fromStage === change.toStage &&
-        PIPELINE.indexOf(next.toStage) === PIPELINE.indexOf(change.toStage) - 1;
-      return !undone;
-    });
-    const stages = [lead.crmStage, ...kept.map((c) => c.toStage)];
-    return Math.max(0, ...stages.map((s) => PIPELINE.indexOf(s)));
-  });
+  const furthest = leads.map(furthestStage);
   const reached = PIPELINE.map((stage, i) => ({ stage, count: furthest.filter((f) => f >= i).length }));
   const count = (stage: CrmStageName) => reached.find((r) => r.stage === stage)!.count;
   const rate = (part: number, whole: number) => (whole > 0 ? part / whole : null);
