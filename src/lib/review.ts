@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { PrismaClient } from "@/generated/prisma/client";
-import { contactChannels } from "./contacts";
+import { campaignDialCode, contactChannels } from "./contacts";
 import { fromStoredSignal } from "./detect";
 import { blockCandidates } from "./mail";
 import { citableSignals } from "./outreach";
@@ -41,6 +41,8 @@ export interface ReviewCard {
 }
 
 export interface ReviewQueue {
+  /** The calling code of the campaign's country, for opening WhatsApp on local numbers. */
+  dialCode: string | null;
   /** The latest draft is written and not yet sent. */
   ready: ReviewCard[];
   /** Has something verified to say and a way to be reached, but no draft. */
@@ -59,7 +61,13 @@ export async function reviewQueue(prisma: PrismaClient, campaignId: string): Pro
   const blocked = new Set((await prisma.doNotContact.findMany({ select: { value: true } })).map((b) => b.value));
   const onList = (email: string | null) => Boolean(email) && blockCandidates(email!).some((value) => blocked.has(value));
 
-  const queue: ReviewQueue = { ready: [], needsDraft: [], sent: [] };
+  const campaign = await prisma.campaign.findUnique({ where: { id: campaignId }, select: { region: true } });
+  const queue: ReviewQueue = {
+    dialCode: campaignDialCode(campaign?.region ?? "", leads.map((l) => l.phone)),
+    ready: [],
+    needsDraft: [],
+    sent: [],
+  };
   for (const lead of leads) {
     const gaps = citableSignals(lead.signals.map(fromStoredSignal)).sort((a, b) => b.severity - a.severity);
     const latest = lead.outreach[0];
