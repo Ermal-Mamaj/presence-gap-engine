@@ -17,7 +17,13 @@ export interface OutreachDraft {
   body: string;
 }
 
-export type OutreachErrorKind = "no_verified_gaps" | "no_template" | "not_configured" | "invalid_response" | "upstream";
+export type OutreachErrorKind =
+  | "no_verified_gaps"
+  | "no_template"
+  | "nothing_sent"
+  | "not_configured"
+  | "invalid_response"
+  | "upstream";
 
 export class OutreachError extends Error {
   constructor(

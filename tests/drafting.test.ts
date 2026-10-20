@@ -132,3 +132,18 @@ describe("draftTopLeads: one run per campaign at a time", () => {
     expect(await draftTopLeads(prisma, campaignId, { deps: { createMessage } })).toMatchObject({ selected: 0 });
   });
 });
+
+describe("draftForLead: a follow-up", () => {
+  it("needs something already sent, and is written from a template even when the model writes first messages", async () => {
+    const { id } = await lead("Klinika", 50);
+    const full = await prisma.business.findUniqueOrThrow({ where: { id }, include: { signals: true, campaign: true } });
+    await expect(draftForLead(prisma, full, { followUp: true })).rejects.toMatchObject({ kind: "nothing_sent" });
+
+    await prisma.outreach.create({ data: { businessId: id, subject: "s", openLine: "o", body: "first", sentAt: new Date() } });
+    await prisma.messageTemplate.create({
+      data: { language: "sq", channel: "email", gapKey: "follow_up", subject: "Përsëri", body: "Përshëndetje përsëri {{name}}" },
+    });
+    const draft = await draftForLead(prisma, full, { followUp: true, channel: "email" });
+    expect(draft).toMatchObject({ body: "Përshëndetje përsëri Klinika", sentAt: null });
+  });
+});

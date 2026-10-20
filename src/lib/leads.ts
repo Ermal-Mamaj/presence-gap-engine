@@ -104,7 +104,7 @@ export async function updateLead(prisma: PrismaClient, id: string, update: LeadU
 /**
  * Records that a draft was sent, and moves the lead along with it: a lead not
  * yet contacted becomes CONTACTED (with its history row), and gets a follow-up
- * FOLLOW_UP_AFTER_DAYS later unless one is already planned. Marking a draft
+ * FOLLOW_UP_AFTER_DAYS later unless one is already planned for later. Marking a draft
  * sent twice keeps the first time, so the record can't drift.
  */
 export async function markOutreachSent(
@@ -144,7 +144,12 @@ export async function markOutreachSent(
         break;
       }
     }
-    await tx.business.updateMany({ where: { id: lead.id, followUpAt: null }, data: { followUpAt: followUp } });
+    // A follow-up date already planned for later stays; none, or one that has come due (this send
+    // is the follow-up), is replaced, or the lead would read "due" for good.
+    await tx.business.updateMany({
+      where: { id: lead.id, OR: [{ followUpAt: null }, { followUpAt: { lte: sentDay } }] },
+      data: { followUpAt: followUp },
+    });
 
     return {
       outreach: await tx.outreach.findUniqueOrThrow({ where: { id: outreachId } }),

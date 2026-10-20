@@ -308,6 +308,18 @@ describe("leads", () => {
     expect(res.status).toBe(422);
     expect((await res.json()).error).toContain("no verified gap");
   });
+
+  it("POST draft with followUp: 409 until something has been sent, then 422 without a follow-up template", async () => {
+    const { id: campaignId } = await newCampaign();
+    const { id } = await newLead(campaignId);
+    const refused = await leadDraft.POST(request("POST", { followUp: true }), params(id));
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toContain("Nothing has been sent");
+    await prisma.outreach.create({ data: { businessId: id, subject: "s", openLine: "o", body: "b", sentAt: new Date() } });
+    const missing = await leadDraft.POST(request("POST", { followUp: true, channel: "email" }), params(id));
+    expect(missing.status).toBe(422);
+    expect((await missing.json()).error).toContain("follow-up template");
+  });
 });
 
 describe("outreach, follow-ups and pipeline", () => {

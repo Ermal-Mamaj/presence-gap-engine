@@ -24,11 +24,15 @@ export function draftSource(): DraftSource {
 export async function draftForLead(
   prisma: PrismaClient,
   lead: LeadForDraft,
-  options: { channel?: DraftChannel; deps?: OutreachDeps; source?: DraftSource } = {}
+  options: { channel?: DraftChannel; deps?: OutreachDeps; source?: DraftSource; followUp?: boolean } = {}
 ) {
   const channel = options.channel ?? defaultChannel(lead);
-  if ((options.source ?? draftSource()) === "templates") {
-    const draft = await draftFromTemplate(prisma, lead, channel);
+  if (options.followUp && (await prisma.outreach.count({ where: { businessId: lead.id, sentAt: { not: null } } })) === 0) {
+    throw new OutreachError("nothing_sent", "Nothing has been sent to this lead yet, so there is nothing to follow up.");
+  }
+  // A follow-up is always written from a template, whatever writes first messages.
+  if (options.followUp || (options.source ?? draftSource()) === "templates") {
+    const draft = await draftFromTemplate(prisma, lead, channel, { followUp: options.followUp });
     return prisma.outreach.create({
       data: {
         businessId: lead.id,
