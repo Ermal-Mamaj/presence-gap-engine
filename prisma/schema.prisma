@@ -82,6 +82,7 @@ model ScanRun {
   updated      Int        @default(0) // existing leads refreshed by this scan
   skipped      Int        @default(0) // invalid or duplicate records ignored
   deferred     Int        @default(0) // websites over the per-scan check limit, left for the next scan
+  progress     String? // what a running scan is doing now, e.g. "Searching cafe in Suharek (5/24)"
 
   startedAt    DateTime   @default(now())
   finishedAt   DateTime?

@@ -1,4 +1,5 @@
 import { chromium, type Page } from "playwright";
+import { stableSourceRef } from "../dedupe";
 import { ANY_BUSINESS_SEARCHES, isAnyBusiness } from "./anyBusiness";
 import type { BusinessSource, RawBusiness, SearchBox } from "./types";
 
@@ -139,6 +140,18 @@ interface Listing {
   reviewCount?: number;
 }
 
+/**
+ * Splits listings into places the campaign has not got yet, which are opened
+ * for their phone, website and address, and places it already has, which are
+ * not: opening a place costs a page load, and a re-scan of a town mostly
+ * meets places it knows. A known place is still reported, with what the list
+ * shows, so the scan marks it as seen again; the details saved earlier stay.
+ */
+export function splitKnown<T extends { href: string }>(listings: T[], knownRefs: ReadonlySet<string> | undefined): { fresh: T[]; known: T[] } {
+  const known = (item: T) => Boolean(knownRefs?.has(stableSourceRef(`gmaps:${item.href}`)));
+  return { fresh: listings.filter((item) => !known(item)), known: listings.filter(known) };
+}
+
 /** The place listings one search shows, scrolling its results to load up to max. */
 async function searchListings(page: Page, query: string, max: number): Promise<Listing[]> {
   await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, {
@@ -190,8 +203,9 @@ async function searchListings(page: Page, query: string, max: number): Promise<L
 
 export const googleMapsScraperSource: BusinessSource = {
   id: "GOOGLE_MAPS_SCRAPER",
-  async search({ region, niche, limit = 25 }: SearchBox): Promise<RawBusiness[]> {
+  async search({ region, niche, limit = 25, onProgress, knownRefs }: SearchBox): Promise<RawBusiness[]> {
     const plan = searchPlan(niche, region, limit);
+    const say = (message: string) => onProgress?.(message);
     const browser = await chromium.launch({
       executablePath: CHROMIUM_PATH,
       headless: true,
@@ -208,6 +222,7 @@ export const googleMapsScraperSource: BusinessSource = {
       let lastError: unknown = null;
       for (const [i, query] of plan.queries.entries()) {
         if (i > 0) await page.waitForTimeout(PAUSE_BETWEEN_SEARCHES_MS);
+        say(`Searching "${query}" (${i + 1}/${plan.queries.length})`);
         try {
           lists.push(await searchListings(page, query, plan.perQuery));
         } catch (err) {
@@ -221,7 +236,13 @@ export const googleMapsScraperSource: BusinessSource = {
       if (lastError && lists.every((list) => list.length === 0)) throw lastError;
 
       const businesses: RawBusiness[] = [];
-      for (const item of mergeListings(lists, plan.total)) {
+      const { fresh, known } = splitKnown(mergeListings(lists, plan.total), knownRefs);
+      for (const item of known) {
+        // Already saved: what the list shows is enough to mark it seen again.
+        businesses.push({ name: item.name, rating: item.rating, reviewCount: item.reviewCount, sourceRef: `gmaps:${item.href}` });
+      }
+      for (const [n, item] of fresh.entries()) {
+        say(`Opening new places ${n + 1}/${fresh.length}${known.length ? ` (${known.length} already known, not reopened)` : ""}`);
         try {
           await page.goto(item.href, { waitUntil: "domcontentloaded", timeout: 20000 });
           await page.waitForTimeout(800); // let the detail pane render
