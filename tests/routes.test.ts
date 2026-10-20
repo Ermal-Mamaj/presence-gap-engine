@@ -239,6 +239,21 @@ describe("POST /api/campaigns/[id]/run with checkOnline", () => {
   });
 });
 
+describe("GET /api/backup", () => {
+  it("downloads the whole database as a named .db file, never cached", async () => {
+    await newCampaign({ name: "Kept in the backup" });
+    const backup = await import("@/app/api/backup/route");
+    const res = await backup.GET();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="presence-gap-engine-backup-\d{4}-\d{2}-\d{2}\.db"$/);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes.subarray(0, 15).toString()).toBe("SQLite format 3");
+    expect(bytes.includes(Buffer.from("Kept in the backup"))).toBe(true);
+    expect(res.headers.get("content-length")).toBe(String(bytes.length));
+  });
+});
+
 describe("GET /api/campaigns/[id]/export", () => {
   it("downloads a CSV named after the campaign, with the formula guard applied", async () => {
     const { id } = await newCampaign({ name: "Tirana dentists" });
