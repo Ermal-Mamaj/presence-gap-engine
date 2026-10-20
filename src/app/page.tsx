@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatDay, localDay } from "@/lib/display";
 import { followUpDay } from "@/lib/leads";
 import type { PipelineSummary } from "@/lib/pipeline";
+import type { OutreachStats, Tally } from "@/lib/stats";
 
 interface CampaignSummary {
   id: string;
@@ -39,6 +40,7 @@ export default function Home() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [due, setDue] = useState<DueFollowUp[]>([]);
   const [pipeline, setPipeline] = useState<PipelineSummary | null>(null);
+  const [stats, setStats] = useState<OutreachStats | null>(null);
 
   // Promise callbacks rather than async/await: state must not be set on the
   // effect's synchronous path (react-hooks/set-state-in-effect).
@@ -73,6 +75,10 @@ export default function Home() {
       .then((res) => (res.ok ? res.json() : null))
       .then((data: PipelineSummary | null) => setPipeline(data))
       .catch(() => setPipeline(null));
+    fetch("/api/stats")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: OutreachStats | null) => setStats(data))
+      .catch(() => setStats(null));
   }, []);
 
   return (
@@ -102,6 +108,7 @@ export default function Home() {
 
         {due.length > 0 && <FollowUpsDue items={due} />}
         {pipeline && pipeline.total > 0 && <Pipeline summary={pipeline} />}
+        {stats && stats.sent > 0 && <WhatWorks stats={stats} />}
 
         {loadError ? (
           <div>
@@ -187,6 +194,41 @@ function FollowUpsDue({ items }: { items: DueFollowUp[] }) {
 const percent = (rate: number | null) => (rate === null ? "—" : `${Math.round(rate * 100)}%`);
 
 /** How far leads have got across every campaign: a funnel by furthest stage reached. */
+/** A tally as "3 of 10 replied (30%)". With few sent, the share says little: the counts are shown first. */
+function tallyText(t: Tally): string {
+  return `${t.replied} of ${t.sent} replied (${percent(t.replyRate)})${t.converted > 0 ? `, ${t.converted} became clients` : ""}`;
+}
+
+function WhatWorks({ stats }: { stats: OutreachStats }) {
+  const rows = (title: string, items: { key: string; label: string; tally: Tally }[]) => (
+    <div>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h3>
+      <ul className="mt-1 space-y-1">
+        {items.map((item) => (
+          <li key={item.key} className="flex flex-wrap items-baseline justify-between gap-x-4 text-sm">
+            <span className="text-zinc-800 dark:text-zinc-200">{item.label}</span>
+            <span className="font-mono text-xs text-zinc-500">{tallyText(item.tally)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+  return (
+    <section className="mb-8 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+      <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">What works</h2>
+      <div className="mt-3 space-y-4">
+        {rows("By message", stats.byTemplate.map((t) => ({ key: t.templateId ?? "none", label: t.label, tally: t })))}
+        {rows("By channel", stats.byChannel.map((c) => ({ key: c.channel, label: c.channel, tally: c })))}
+        {rows("By business type", stats.byNiche.map((n) => ({ key: n.niche, label: n.niche, tally: n })))}
+      </div>
+      <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+        Each lead counts once, under the first message sent to it, and as a reply if it ever replied. A few messages prove
+        little: wait for a dozen or more before choosing between two.
+      </p>
+    </section>
+  );
+}
+
 function Pipeline({ summary }: { summary: PipelineSummary }) {
   // Past CONTACTED is where the work shows; earlier stages are mostly volume.
   const shown = summary.reached.filter((r) => r.stage !== "QUALIFIED");

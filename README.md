@@ -157,6 +157,10 @@ A failed request is **not** proof of a gap. Network errors, timeouts, TLS failur
 
 A campaign can be renamed and its draft language changed from its page (`PATCH /api/campaigns/<id>`). Region, niche and source stay fixed, since they define what was scanned. **Delete campaign** (`DELETE /api/campaigns/<id>`) removes the campaign with every lead, draft, note, stage history and scan in it, after a confirmation that says how many leads have been worked. It is refused while a scan is running, checked in the same statement that deletes, unless that scan has been silent past the 15-minute stale window and so has crashed.
 
+## What works
+
+The home page shows, once something has been sent, how many leads replied by the message template of the first message sent to them, by channel and by business type (`src/lib/stats.ts`, `GET /api/stats`, or `?campaignId=` for one campaign). A lead counts once, under its first message, and as a reply if it ever reached *replied* (a reply followed by *not interested* still counts; a move stepped straight back doesn’t). On a sent card of the review page, **They replied**, **Became a client** and **Not interested** move the lead along in one click. A dozen or more messages per template are needed before the difference between two means much.
+
 ## CRM stages
 
 Stages move forward freely (skipping is allowed), one step back is allowed to fix a mistake, any lead can be marked `DEAD`, and a dead lead can only be reopened to `NEW` or `QUALIFIED` (`src/lib/crm.ts`). Every stage change is stored in `StageChange`.
