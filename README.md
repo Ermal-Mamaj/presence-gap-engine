@@ -51,6 +51,8 @@ Two pluggable sources behind a common interface (`src/lib/sources/types.ts`):
   Chromium browser: set `PLAYWRIGHT_CHROMIUM_PATH` to an installed Chrome or
   Edge (`C:/Program Files/Google/Chrome/Application/chrome.exe` on Windows).
 
+**Several places in one campaign:** the region may name up to 5 places separated by semicolons (`Suharekë, Kosovo; Rahovec, Kosovo`; a comma stays part of one place’s name). Each is searched in turn by the same source, the results are combined, and a business found in two places is one lead. The scan takes about that many times as long, and its progress lines name the place. If a place can’t be searched but another gets through, the scan succeeds and the scan history says which one is missing (run again to retry); if none gets through, it fails and says why for each. A single place behaves as before.
+
 A scan that takes minutes says what it is doing: the campaign page shows a line such as *Searching "cafe in Suharek" (5/24)* or *Opening new places 12/60 (40 already known, not reopened)*, and every message also refreshes the scan’s claim, so a long search is never mistaken for a crashed scan. On a **re-scan** the Google Maps source skips opening places the campaign already has (matched by Google’s stable place id): the list shows enough to mark them seen again, their saved phone, website and address stay, and only new places cost a page load. To refresh a known place’s details, delete the lead and scan again.
 
 The niche is either a term the OSM adapter knows (about 65, from "dentist" to "driving school", plural accepted) or, for any other business type, OpenStreetMap tags given directly: `shop=optician`, or up to five separated by commas. Tags are validated before they reach the Overpass query.

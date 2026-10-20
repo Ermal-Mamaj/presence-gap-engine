@@ -829,3 +829,67 @@ describe("a long search", () => {
     expect(known?.size).toBe(2);
   });
 });
+
+describe("a campaign of several places", () => {
+  async function multiCampaign(region: string) {
+    return (await prisma.campaign.create({ data: { name: "Towns", region, niche: "cafe" } })).id;
+  }
+
+  it("searches each place in turn and keeps every business, each once", async () => {
+    const id = await multiCampaign("Suharekë, Kosovo; Rahovec, Kosovo");
+    const regions: string[] = [];
+    const outcome = await scan(
+      id,
+      sourceOf(async ({ region }) => {
+        regions.push(region);
+        return region.startsWith("Suharek") ? [biz(1), biz(2)] : [biz(2), biz(3)]; // business 2 is on both lists
+      })
+    );
+    expect(regions).toEqual(["Suharekë, Kosovo", "Rahovec, Kosovo"]);
+    expect(outcome).toMatchObject({ found: 3, created: 3, skipped: 1 });
+    expect(await leads(id)).toHaveLength(3);
+  });
+
+  it("names the place in the progress messages", async () => {
+    const id = await multiCampaign("Suharekë; Rahovec");
+    const claim = await claimCampaignScan(prisma, id);
+    const seen: (string | null)[] = [];
+    await executeCampaignScan(prisma, claim, {
+      analyze: fakeAnalyze,
+      getSource: sourceOf(async ({ region, onProgress }) => {
+        onProgress?.("Searching (1/1)");
+        await new Promise((r) => setTimeout(r, 1100)); // progress is written at most once a second
+        seen.push((await prisma.scanRun.findUniqueOrThrow({ where: { id: claim.scanId } })).progress);
+        return [biz(region.length)];
+      }),
+    });
+    expect(seen).toEqual(["Suharekë: Searching (1/1)", "Rahovec: Searching (1/1)"]);
+  }, 15_000);
+
+  it("is a success that says which place it could not search, when another got through", async () => {
+    const id = await multiCampaign("Suharekë, Kosovo; Rahovec, Kosovo");
+    const outcome = await scan(
+      id,
+      sourceOf(async ({ region }) => {
+        if (region.startsWith("Rahovec")) throw new Error("Overpass API error: 504");
+        return [biz(1)];
+      })
+    );
+    expect(outcome.created).toBe(1);
+    const run = await prisma.scanRun.findFirstOrThrow({ where: { campaignId: id } });
+    expect(run.status).toBe("SUCCEEDED");
+    expect(run.errorMessage).toContain("Rahovec, Kosovo: Overpass API error: 504");
+    expect(run.errorMessage).not.toContain("Suharekë");
+  });
+
+  it("fails, saying why for each place, when none could be searched", async () => {
+    const id = await multiCampaign("Suharekë; Rahovec");
+    await expect(scan(id, failing("Overpass API error: 504"))).rejects.toThrow("Suharekë: Overpass API error: 504; Rahovec: Overpass API error: 504");
+    expect(await leads(id)).toHaveLength(0);
+  });
+
+  it("fails a single place with the source's own message, as before", async () => {
+    const id = await multiCampaign("Suharekë");
+    await expect(scan(id, failing("Overpass API error: 504"))).rejects.toThrow(/^Overpass API error: 504$/);
+  });
+});

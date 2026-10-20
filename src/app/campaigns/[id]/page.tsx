@@ -782,7 +782,13 @@ export default function CampaignDetailPage() {
                           {s.status}
                         </span>
                         {s.errorMessage && (
-                          <p className="mt-1 max-w-sm text-xs text-red-600 dark:text-red-400">{s.errorMessage}</p>
+                          <p
+                            className={`mt-1 max-w-sm text-xs ${
+                              s.status === "FAILED" ? "text-red-600 dark:text-red-400" : "text-amber-700 dark:text-amber-400"
+                            }`}
+                          >
+                            {s.errorMessage}
+                          </p>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-zinc-600 dark:text-zinc-400">
