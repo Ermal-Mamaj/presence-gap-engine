@@ -206,6 +206,10 @@ Everything a scan concluded is visible, including how sure it was:
   the guard, a compact number like `+355691234567` opens as `3.56E+11`. The
   export always covers the whole campaign, not the filtered view.
 
+## Backups
+
+Everything lives in one SQLite file (`dev.db`): campaigns, leads, messages, templates, notes and the do-not-contact list. **Download backup** on the home page (`GET /api/backup`) saves a consistent copy while the app runs (SQLite’s `VACUUM INTO`, so a scan or a save in progress can’t tear it). To restore, stop the app, put the downloaded file where `dev.db` is, and start it again; run `npx prisma migrate deploy` if the backup is from an older version. The file holds every lead’s contact details and your notes, so keep it as private as the app itself; there is no login, which is why `npm run start:local` listens on this computer only.
+
 ## Setup
 
 ```bash
