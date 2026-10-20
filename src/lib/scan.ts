@@ -1,6 +1,6 @@
 import type { Business, GapSignal, Prisma, PrismaClient } from "@/generated/prisma/client";
 import type { SiteContacts } from "./contacts";
-import { dedupeKeyFor } from "./dedupe";
+import { dedupeKeyFor, stableSourceRef } from "./dedupe";
 import {
   analyzePresence,
   deferWebsiteCheck,
@@ -69,6 +69,7 @@ const DEFAULT_CONCURRENCY = 5;
  */
 export const DEFAULT_MAX_WEBSITE_CHECKS = 60;
 export const DEFAULT_STALE_AFTER_MS = 15 * 60 * 1000;
+const PROGRESS_EVERY_MS = 1000;
 const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 60_000 };
 
 export async function mapWithConcurrency<T, R>(
@@ -253,7 +254,20 @@ export async function executeCampaignScan(
   try {
     let rawResults: unknown;
     try {
-      rawResults = await deps.getSource(campaign.source).search({ region: campaign.region, niche: campaign.niche });
+      // The places this campaign already has, so a source can skip opening them again.
+      const known = await prisma.business.findMany({ where: { campaignId, sourceRef: { not: null } }, select: { sourceRef: true } });
+      const knownRefs = new Set(known.map((row) => stableSourceRef(row.sourceRef!)));
+      // A long search is still a live scan: each message also refreshes the claim, which only the
+      // website checks did before, so a 20-minute search could be taken for a crashed one.
+      let lastProgressAt = 0;
+      const onProgress = (message: string) => {
+        void heartbeat();
+        const at = now().getTime();
+        if (at - lastProgressAt < PROGRESS_EVERY_MS) return;
+        lastProgressAt = at;
+        prisma.scanRun.update({ where: { id: scanId }, data: { progress: message } }).catch(() => undefined);
+      };
+      rawResults = await deps.getSource(campaign.source).search({ region: campaign.region, niche: campaign.niche, onProgress, knownRefs });
     } catch (err) {
       throw new DiscoveryError(err instanceof Error ? err.message : "Discovery failed");
     }
@@ -368,7 +382,7 @@ export async function executeCampaignScan(
       }
       await tx.scanRun.update({
         where: { id: scan.id },
-        data: { status: "SUCCEEDED", found: prepared.length, created, updated, skipped, deferred, finishedAt: now() },
+        data: { status: "SUCCEEDED", found: prepared.length, created, updated, skipped, deferred, progress: null, finishedAt: now() },
       });
       await tx.campaign.update({ where: { id: campaignId }, data: { status: "DONE", errorMessage: null } });
     }, TRANSACTION_OPTIONS);
@@ -382,7 +396,7 @@ export async function executeCampaignScan(
     try {
       await prisma.scanRun.update({
         where: { id: scan.id },
-        data: { status: "FAILED", errorMessage: message, finishedAt: now() },
+        data: { status: "FAILED", errorMessage: message, progress: null, finishedAt: now() },
       });
       await prisma.campaign.update({ where: { id: campaignId }, data: { status: "FAILED", errorMessage: message } });
     } catch (recordError) {
