@@ -204,6 +204,15 @@ describe("markOutreachSent and dueFollowUps", () => {
     expect(await prisma.stageChange.count({ where: { businessId: lead.id } })).toBe(0);
   });
 
+  it("replaces a follow-up date that has come due, since this send is the follow-up", async () => {
+    // Otherwise a lead followed up on would read "due" for good.
+    const { draft } = await leadWithDraft({ crmStage: "CONTACTED", followUpAt: parseFollowUpDay("2026-10-14")! });
+    const { business } = await markOutreachSent(prisma, draft.id, { now: NOW });
+    expect(followUpDay(business.followUpAt!)).toBe("2026-10-17");
+    const overdue = await leadWithDraft({ crmStage: "CONTACTED", followUpAt: parseFollowUpDay("2026-10-01")! });
+    expect(followUpDay((await markOutreachSent(prisma, overdue.draft.id, { now: NOW })).business.followUpAt!)).toBe("2026-10-17");
+  });
+
   it("keeps the first send time when a draft is marked sent twice", async () => {
     const { draft } = await leadWithDraft();
     await markOutreachSent(prisma, draft.id, { now: NOW });

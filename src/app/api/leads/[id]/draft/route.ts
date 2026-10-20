@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 const STATUS_BY_KIND = {
   no_verified_gaps: 422,
   no_template: 422,
+  nothing_sent: 409,
   not_configured: 503,
   invalid_response: 502,
   upstream: 502,
@@ -15,13 +16,16 @@ const STATUS_BY_KIND = {
 /**
  * Drafts outreach for one lead. The body may name a channel ("email",
  * "phone", "message"); without one, the draft is for a channel the lead can
- * actually be reached on. The language is the campaign's.
+ * actually be reached on. The language is the campaign's. { "followUp": true }
+ * drafts the short second message from a follow-up template, for a lead
+ * something has already been sent to.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   // An empty body is fine: the channel is optional.
   const body: unknown = await req.json().catch(() => ({}));
   const requested = body && typeof body === "object" ? (body as { channel?: unknown }).channel : undefined;
+  const followUp = Boolean(body && typeof body === "object" && (body as { followUp?: unknown }).followUp === true);
   if (requested !== undefined && !isDraftChannel(requested)) {
     return NextResponse.json({ error: `channel must be one of ${DRAFT_CHANNELS.join(", ")}` }, { status: 400 });
   }
@@ -32,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   try {
-    return NextResponse.json(await draftForLead(prisma, business, { channel: requested }), { status: 201 });
+    return NextResponse.json(await draftForLead(prisma, business, { channel: requested, followUp }), { status: 201 });
   } catch (err) {
     if (err instanceof OutreachError) {
       return NextResponse.json({ error: err.message }, { status: STATUS_BY_KIND[err.kind] });

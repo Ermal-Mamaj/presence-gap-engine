@@ -95,6 +95,16 @@ export default function ReviewPage() {
   }, [load]);
 
   const cards = queue?.[tab] ?? [];
+
+  // After a message goes out, open the next one waiting: the one below it, else the one above.
+  const goToNext = useCallback(
+    (leadId: string) => {
+      const waiting = queue?.ready ?? [];
+      const i = waiting.findIndex((c) => c.leadId === leadId);
+      setSelected((waiting[i + 1] ?? waiting[i - 1])?.leadId ?? null);
+    },
+    [queue]
+  );
   const current = useMemo(
     () => [...(queue?.ready ?? []), ...(queue?.needsDraft ?? []), ...(queue?.sent ?? [])].find((c) => c.leadId === selected) ?? null,
     [queue, selected]
@@ -187,6 +197,8 @@ export default function ReviewPage() {
                   mail={mail}
                   dialCode={queue?.dialCode ?? null}
                   onChanged={load}
+                  onSent={() => goToNext(current.leadId)}
+                  onSkip={() => goToNext(current.leadId)}
                 />
               ) : (
                 cards.length > 0 && <p className="text-sm text-zinc-500">Pick a card to read its message.</p>
@@ -240,11 +252,16 @@ function CardDetail({
   mail,
   dialCode,
   onChanged,
+  onSent,
+  onSkip,
 }: {
   card: Card;
   mail: MailStatus | null;
   dialCode: string | null;
   onChanged: () => Promise<void> | void;
+  /** A message has gone out: move on to the next lead waiting. */
+  onSent: () => void;
+  onSkip: () => void;
 }) {
   const draft = card.draft;
   const [subject, setSubject] = useState(draft?.subject ?? "");
@@ -263,7 +280,7 @@ function CardDetail({
     return data;
   }
 
-  async function act(work: () => Promise<unknown>, done?: string) {
+  async function act(work: () => Promise<unknown>, done?: string, options: { advance?: boolean } = {}) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -271,6 +288,7 @@ function CardDetail({
       await work();
       if (done) setNote(done);
       await onChanged();
+      if (options.advance) onSent();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -290,6 +308,19 @@ function CardDetail({
       setError("Could not reach the clipboard. Select the text and copy it.");
     }
   }
+
+  // Opening WhatsApp leaves this page; on coming back, ask whether the message went out.
+  const [openedWhatsapp, setOpenedWhatsapp] = useState(false);
+  const markSent = () =>
+    act(
+      async () => {
+        // What was sent is what is recorded, so unsaved edits are saved first.
+        if (dirty) await save();
+        await call(`/api/outreach/${draft!.id}/sent`, { method: "POST", body: JSON.stringify({ today: localDay() }) }, "Could not mark it sent");
+      },
+      "Marked as sent.",
+      { advance: true }
+    );
 
   const email = normalizeEmail(card.email);
   const whatsapp = whatsappLink(card.phone, dialCode);
@@ -346,6 +377,24 @@ function CardDetail({
                 {card.followUpAt &&
                   ` · follow up ${formatDay(followUpDay(card.followUpAt))}${followUpDay(card.followUpAt) <= localDay() ? " (due)" : ""}`}
               </p>
+              <button
+                disabled={busy}
+                className={`${BUTTON} mt-3`}
+                title="Writes the short second message from a follow-up template (add one under Templates). It then waits under Ready to send."
+                onClick={() =>
+                  act(
+                    () =>
+                      call(
+                        `/api/leads/${card.leadId}/draft`,
+                        { method: "POST", body: JSON.stringify({ channel: draft.channel, followUp: true }) },
+                        "Could not draft the follow-up"
+                      ),
+                    "Follow-up drafted. It is under Ready to send."
+                  )
+                }
+              >
+                Draft a follow-up
+              </button>
             </div>
           ) : (
             <>
@@ -382,7 +431,7 @@ function CardDetail({
                           "Could not send the email"
                         );
                         setPreview(result.dryRun ? result.text : null);
-                      }, mail.dryRun ? "Dry run: built, not sent. This is the text it would send:" : "Sent.");
+                      }, mail.dryRun ? "Dry run: built, not sent. This is the text it would send:" : "Sent.", { advance: !mail.dryRun });
                     }}
                   >
                     {mail.dryRun ? "Send email (dry run)" : "Send email"}
@@ -394,7 +443,13 @@ function CardDetail({
                   </a>
                 )}
                 {draft.channel === "message" && whatsapp && (
-                  <a className={BUTTON} href={`${whatsapp}?text=${encodeURIComponent(body)}`} target="_blank" rel="noreferrer">
+                  <a
+                    className={BUTTON}
+                    href={`${whatsapp}?text=${encodeURIComponent(body)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => setOpenedWhatsapp(true)}
+                  >
                     Open in WhatsApp
                   </a>
                 )}
@@ -417,17 +472,25 @@ function CardDetail({
                   disabled={busy}
                   className={PRIMARY}
                   title="Records that it went out. A lead not yet contacted moves to CONTACTED, with a follow-up in 3 days."
-                  onClick={() =>
-                    act(async () => {
-                      // What was sent is what is recorded, so unsaved edits are saved first.
-                      if (dirty) await save();
-                      await call(`/api/outreach/${draft.id}/sent`, { method: "POST", body: JSON.stringify({ today: localDay() }) }, "Could not mark it sent");
-                    }, "Marked as sent.")
-                  }
+                  onClick={markSent}
                 >
                   Mark as sent
                 </button>
+                <button disabled={busy} className="text-xs text-zinc-500 underline" onClick={onSkip}>
+                  Skip for now
+                </button>
               </div>
+              {openedWhatsapp && (
+                <div className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:bg-emerald-900/20 dark:text-emerald-200">
+                  Did you send it in WhatsApp?
+                  <button disabled={busy} className={`${PRIMARY} ml-3`} onClick={markSent}>
+                    Yes, mark as sent and go to the next
+                  </button>
+                  <button className="ml-3 text-xs underline" onClick={() => setOpenedWhatsapp(false)}>
+                    Not yet
+                  </button>
+                </div>
+              )}
             </>
           )}
         </>

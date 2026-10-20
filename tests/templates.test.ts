@@ -203,3 +203,27 @@ describe("draftFromTemplate: a campaign for anything", () => {
     expect(draft.body).not.toMatch(/anything/i);
   });
 });
+
+describe("follow-up drafts", () => {
+  it("fills the follow-up template, whatever gaps the lead has", async () => {
+    await template({ gapKey: "no_website", body: "first {{name}}" });
+    const followUp = await template({ gapKey: "follow_up", subject: "Edhe një herë, {{name}}", body: "Përshëndetje përsëri {{name}}" });
+    const draft = await draftFromTemplate(prisma, await lead("Klinika Arbëri"), "email", { followUp: true });
+    expect(draft).toEqual({ templateId: followUp.id, gapKey: "follow_up", subject: "Edhe një herë, Klinika Arbëri", body: "Përshëndetje përsëri Klinika Arbëri" });
+    // A lead with no verified gap at all can still be followed up.
+    expect((await draftFromTemplate(prisma, await lead("Plain", []), "email", { followUp: true })).templateId).toBe(followUp.id);
+  });
+
+  it("never uses a follow-up template for a first message", async () => {
+    await template({ gapKey: "follow_up" });
+    await expect(draftFromTemplate(prisma, await lead("Klinika Arbëri"), "email")).rejects.toMatchObject({ kind: "no_template" });
+  });
+
+  it("says a follow-up template is missing, not a gap template", async () => {
+    await template({ gapKey: "no_website" });
+    await expect(draftFromTemplate(prisma, await lead("Klinika Arbëri"), "email", { followUp: true })).rejects.toMatchObject({
+      kind: "no_template",
+      message: expect.stringMatching(/follow-up template/),
+    });
+  });
+});

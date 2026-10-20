@@ -22,6 +22,9 @@ export const TEMPLATE_GAPS = {
   no_meta_description: "Site gives search engines no description",
   no_tap_to_call: "Phone number can't be tapped to call",
   thin_listing: "Few or no online reviews",
+  // Not a gap: the short second message to a business that was written to and hasn't answered.
+  // It is drafted on request from a sent message (see draftFromTemplate), never from a scan.
+  follow_up: "A follow-up to a message already sent",
 } as const;
 
 export type TemplateGap = keyof typeof TEMPLATE_GAPS;

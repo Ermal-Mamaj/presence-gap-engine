@@ -110,11 +110,15 @@ export interface TemplateDraft {
 export async function draftFromTemplate(
   prisma: PrismaClient,
   lead: LeadForDraft,
-  channel: DraftChannel
+  channel: DraftChannel,
+  options: { followUp?: boolean } = {}
 ): Promise<TemplateDraft> {
   const language = isDraftLanguage(lead.campaign.language) ? lead.campaign.language : DEFAULT_LANGUAGE;
   const citable = citableSignals(lead.signals.map(fromStoredSignal)).sort((a, b) => b.severity - a.severity);
-  const gapOrder = [...new Set(citable.map((s) => s.key).filter(isTemplateGap))];
+  // A follow-up isn't about a gap: it only needs a follow-up template.
+  const gapOrder: TemplateGap[] = options.followUp
+    ? ["follow_up"]
+    : [...new Set(citable.map((s) => s.key).filter(isTemplateGap))].filter((key) => key !== "follow_up");
   if (gapOrder.length === 0) {
     throw new OutreachError(
       "no_verified_gaps",
@@ -163,7 +167,10 @@ export async function draftFromTemplate(
   const top = gapOrder[0];
   throw new OutreachError(
     "no_template",
-    `No ${DRAFT_LANGUAGES[language]} ${CHANNEL_LABEL[channel].toLowerCase()} template fits this lead yet. ` +
-      `Its main gap is "${TEMPLATE_GAPS[top]}"; add a template for it under Templates.`
+    options.followUp
+      ? `No ${DRAFT_LANGUAGES[language]} ${CHANNEL_LABEL[channel].toLowerCase()} follow-up template fits this lead yet. ` +
+          `Add one under Templates, for "${TEMPLATE_GAPS.follow_up}".`
+      : `No ${DRAFT_LANGUAGES[language]} ${CHANNEL_LABEL[channel].toLowerCase()} template fits this lead yet. ` +
+          `Its main gap is "${TEMPLATE_GAPS[top]}"; add a template for it under Templates.`
   );
 }
