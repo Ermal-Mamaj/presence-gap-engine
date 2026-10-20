@@ -9,7 +9,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "start:local": "next start -H 127.0.0.1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
@@ -19,6 +20,7 @@
     "dotenv": "^17.4.2",
     "leaflet": "1.9.4",
     "next": "16.2.10",
+    "nodemailer": "10.0.13",
     "playwright": "^1.61.1",
     "prisma": "^7.8.0",
     "react": "19.2.4",
@@ -30,6 +32,7 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/leaflet": "1.9.12",
     "@types/node": "^20",
+    "@types/nodemailer": "8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

@@ -190,6 +190,55 @@ describe("POST /api/campaigns/[id]/run", () => {
   });
 });
 
+describe("POST /api/campaigns/[id]/run with checkOnline", () => {
+  it("refuses at once, starting nothing, when no search provider is set up", async () => {
+    const { id } = await newCampaign();
+    const res = await run.POST(request("POST", { checkOnline: true }), params(id));
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toContain("GROQ_API_KEY");
+    expect((await prisma.campaign.findUniqueOrThrow({ where: { id } })).status).not.toBe("RUNNING");
+  });
+
+  it("checks the new leads online once the scan has succeeded", async () => {
+    vi.stubEnv("GROQ_API_KEY", "gsk-test");
+    const searches: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        searches.push(JSON.parse(String(init.body)).messages[0].content);
+        return Response.json({ choices: [{ message: { content: "NONE" } }] });
+      })
+    );
+    try {
+      const { id } = await newCampaign();
+      expect((await run.POST(request("POST", { checkOnline: true }), params(id))).status).toBe(202);
+      await runPendingAfter();
+      const saved = await prisma.business.findFirstOrThrow({ where: { campaignId: id } });
+      expect(saved).toMatchObject({ name: "Klinika", onlineCheck: "none" });
+      expect(searches).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("is a plain scan without it", async () => {
+    vi.stubEnv("GROQ_API_KEY", "gsk-test");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      const { id } = await newCampaign();
+      await run.POST(request("POST", {}), params(id));
+      await runPendingAfter();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect((await prisma.business.findFirstOrThrow({ where: { campaignId: id } })).onlineCheck).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe("GET /api/campaigns/[id]/export", () => {
   it("downloads a CSV named after the campaign, with the formula guard applied", async () => {
     const { id } = await newCampaign({ name: "Tirana dentists" });
@@ -290,5 +339,79 @@ describe("outreach, follow-ups and pipeline", () => {
     expect(one.reached.find((r: { stage: string }) => r.stage === "CONTACTED").count).toBe(1);
     const all = await (await pipeline.GET(request("GET", undefined, "http://test.local/api/pipeline"))).json();
     expect(all.total).toBeGreaterThan(2);
+  });
+});
+
+describe("templates API", () => {
+  it("creates, lists, edits and deletes a template, refusing a bad one with its reason", async () => {
+    const templates = await import("@/app/api/templates/route");
+    const one = await import("@/app/api/templates/[id]/route");
+    const input = { language: "sq", channel: "email", gapKey: "no_website", subject: "Për {{name}}", body: "Përshëndetje {{name}}" };
+
+    const bad = await templates.POST(request("POST", { ...input, body: "Hi {{owner}}" }));
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toContain("Unknown placeholder");
+
+    const created = await templates.POST(request("POST", input));
+    expect(created.status).toBe(201);
+    const { id } = await created.json();
+    const listed = await (await templates.GET()).json();
+    expect(listed.find((t: { id: string }) => t.id === id)).toMatchObject({ _count: { outreach: 0 } });
+
+    const edited = await one.PATCH(request("PATCH", { ...input, body: "Tjetër {{name}}" }), params(id));
+    expect(edited.status).toBe(200);
+    expect((await one.DELETE(request("DELETE"), params(id))).status).toBe(204);
+    expect((await one.DELETE(request("DELETE"), params(id))).status).toBe(404);
+  });
+
+  it("drafts a lead from a template, and says which one is missing when none fits", async () => {
+    const templates = await import("@/app/api/templates/route");
+    const { id: campaignId } = await newCampaign({ language: "sq" });
+    const { id } = await newLead(campaignId, { signals: { create: [{ key: "no_website", label: "No website found", severity: 40 }] } });
+
+    const missing = await leadDraft.POST(request("POST", { channel: "phone" }), params(id));
+    expect(missing.status).toBe(422);
+    expect((await missing.json()).error).toContain("call script template");
+
+    await templates.POST(request("POST", { language: "sq", channel: "phone", gapKey: "no_website", body: "Mirëdita, flas për {{name}}" }));
+    const made = await leadDraft.POST(request("POST", { channel: "phone" }), params(id));
+    expect(made.status).toBe(201);
+    expect(await made.json()).toMatchObject({ channel: "phone", body: "Mirëdita, flas për Klinika", templateId: expect.any(String) });
+  });
+});
+
+describe("review queue and draft edits", () => {
+  it("lists a campaign's queue, and saves edits to an unsent draft but not a sent one", async () => {
+    const review = await import("@/app/api/campaigns/[id]/review/route");
+    const draftRoute = await import("@/app/api/outreach/[id]/route");
+    expect((await review.GET(request("GET"), params("nope"))).status).toBe(404);
+
+    const { id: campaignId } = await newCampaign();
+    const { id } = await newLead(campaignId, {
+      signals: { create: [{ key: "no_website", label: "No website found", severity: 40 }] },
+      outreach: { create: [{ subject: "s", openLine: "o", body: "b" }] },
+    });
+    const queue = await (await review.GET(request("GET"), params(campaignId))).json();
+    expect(queue.ready.map((c: { leadId: string }) => c.leadId)).toEqual([id]);
+
+    const draftId = queue.ready[0].draft.id;
+    expect((await draftRoute.PATCH(request("PATCH", { body: "" }), params(draftId))).status).toBe(400);
+    const saved = await draftRoute.PATCH(request("PATCH", { subject: "Better", body: "Edited" }), params(draftId));
+    expect(saved.status).toBe(200);
+    await sent.POST(request("POST", {}), params(draftId));
+    expect((await draftRoute.PATCH(request("PATCH", { body: "Late edit" }), params(draftId))).status).toBe(409);
+  });
+});
+
+describe("online check route", () => {
+  it("reports no provider, refuses to start without one, and checks its input", async () => {
+    const check = await import("@/app/api/campaigns/[id]/online-check/route");
+    const { id } = await newCampaign();
+    expect(await (await check.GET(request("GET"), params(id))).json()).toEqual({ provider: null, progress: null });
+    expect((await check.POST(request("POST", { limit: 0 }), params(id))).status).toBe(400);
+    expect((await check.POST(request("POST", {}), params("nope"))).status).toBe(404);
+    const refused = await check.POST(request("POST", {}), params(id));
+    expect(refused.status).toBe(503);
+    expect((await refused.json()).error).toContain("GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY");
   });
 });

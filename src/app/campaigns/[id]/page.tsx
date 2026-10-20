@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { contactChannels } from "@/lib/contacts";
 import { CRM_STAGES } from "@/lib/crm";
 import { followUpDay } from "@/lib/leads";
@@ -62,6 +62,8 @@ interface Business {
   websiteStatus: WebsiteStatus;
   lastSeenAt: string;
   followUpAt: string | null;
+  onlineCheck: string | null;
+  onlineCheckUrl: string | null;
   _count: { outreach: number };
   signals: GapSignal[];
 }
@@ -122,6 +124,8 @@ export default function CampaignDetailPage() {
   const [rescoring, setRescoring] = useState(false);
   const [editing, setEditing] = useState(false);
   const [bulkDrafting, setBulkDrafting] = useState(false);
+  const [online, setOnline] = useState<OnlineCheckState | null>(null);
+  const onlineWasRunning = useRef(false);
   const [view, setView] = useState<"table" | "map">("table");
   const [rescoreNotice, setRescoreNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -208,11 +212,15 @@ export default function CampaignDetailPage() {
 
   const filtering = stageFilter !== "ALL" || siteFilter !== "ALL" || contactFilter !== "ALL";
 
-  async function handleRun() {
+  async function handleRun(checkOnline = false) {
     setRunning(true);
     setError(null);
     try {
-      const res = await fetch(`/api/campaigns/${id}/run`, { method: "POST" });
+      const res = await fetch(`/api/campaigns/${id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checkOnline }),
+      });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? "Run failed");
       // 202 Accepted: the scan has started, not finished. Reload so the
@@ -225,6 +233,56 @@ export default function CampaignDetailPage() {
     } finally {
       setRunning(false);
     }
+  }
+
+  // The online check runs on the server; read its progress, and keep reading while it runs.
+  const readOnlineCheck = useCallback(() => {
+    return fetch(`/api/campaigns/${id}/online-check`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: OnlineCheckState | null) => {
+        // When a run finishes, the leads have changed: reload them once.
+        if (onlineWasRunning.current && data && !data.progress?.running) load();
+        onlineWasRunning.current = Boolean(data?.progress?.running);
+        setOnline(data);
+      })
+      .catch(() => undefined);
+  }, [id, load]);
+
+  useEffect(() => {
+    readOnlineCheck();
+  }, [readOnlineCheck]);
+
+  // "Scan + check online" starts the check on the server the moment the scan
+  // succeeds, so look for it just after the scan ends.
+  const wasScanning = useRef(false);
+  const readOnlineCheckRef = useRef(readOnlineCheck);
+  useEffect(() => {
+    readOnlineCheckRef.current = readOnlineCheck;
+  }, [readOnlineCheck]);
+  useEffect(() => {
+    const justFinished = wasScanning.current && !scanning;
+    wasScanning.current = scanning;
+    if (!justFinished) return;
+    const timer = setTimeout(() => readOnlineCheckRef.current(), 1500);
+    return () => clearTimeout(timer);
+  }, [scanning]);
+
+  useEffect(() => {
+    if (!online?.progress?.running) return;
+    const timer = setInterval(readOnlineCheck, 3000);
+    return () => clearInterval(timer);
+  }, [online?.progress?.running, readOnlineCheck]);
+
+  async function handleOnlineCheck() {
+    setError(null);
+    const res = await fetch(`/api/campaigns/${id}/online-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) setError(data?.error ?? "Could not start the online check");
+    await readOnlineCheck();
   }
 
   /** Drafts the best leads that are ready for a first message; see draftTopLeads. */
@@ -336,13 +394,27 @@ export default function CampaignDetailPage() {
               </p>
             </div>
           )}
-          <button
-            onClick={handleRun}
-            disabled={running || campaign.status === "RUNNING"}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-          >
-            {running || campaign.status === "RUNNING" ? "Running…" : campaign.businesses.length ? "Re-run" : "Run pipeline"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => handleRun()}
+              disabled={running || campaign.status === "RUNNING"}
+              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {running || campaign.status === "RUNNING" ? "Running…" : campaign.businesses.length ? "Re-run" : "Run pipeline"}
+            </button>
+            <button
+              onClick={() => handleRun(true)}
+              disabled={running || campaign.status === "RUNNING" || !online?.provider || Boolean(online?.progress?.running)}
+              title={
+                online?.provider
+                  ? "Runs the scan, then searches the web for the own website of up to 20 leads with none listed, without waiting for you in between."
+                  : "Set GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY in .env to search the web for these leads."
+              }
+              className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            >
+              Scan + check online
+            </button>
+          </div>
         </div>
 
         {campaign.status === "FAILED" && campaign.errorMessage && (
@@ -470,6 +542,13 @@ export default function CampaignDetailPage() {
                   : `${campaign.businesses.length} leads`}
               </span>
 
+              <Link
+                href={`/campaigns/${id}/review`}
+                className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900"
+              >
+                Review &amp; send
+              </Link>
+
               <span className="inline-flex overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
                 {(["table", "map"] as const).map((v) => (
                   <button
@@ -490,10 +569,32 @@ export default function CampaignDetailPage() {
               {rescoreNotice && <span className="text-xs text-zinc-500 dark:text-zinc-400">{rescoreNotice}</span>}
 
               <button
+                onClick={handleOnlineCheck}
+                disabled={!online?.provider || Boolean(online?.progress?.running)}
+                title={
+                  online?.provider
+                    ? "Searches the web for the own website of up to 20 leads with none listed, and checks each page found against the lead's phone, name and street."
+                    : "Set GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY in .env to search the web for these leads."
+                }
+                className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              >
+                {online?.progress?.running
+                  ? `Checking online ${online.progress.done}/${online.progress.total}…`
+                  : "Check offline leads online"}
+              </button>
+              {online?.progress && !online.progress.running && (
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {online.progress.error
+                    ? `Online check stopped: ${online.progress.error}`
+                    : `Online check: ${online.progress.found} found, ${online.progress.none} not online, ${online.progress.unsure} unsure.`}
+                </span>
+              )}
+
+              <button
                 onClick={handleBulkDraft}
                 disabled={bulkDrafting || scanning}
                 title="Drafts the 10 highest-scoring leads that have a verified gap, no draft yet, and stage NEW or QUALIFIED, in the campaign's language. Takes about a minute."
-                className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
               >
                 {bulkDrafting ? "Drafting…" : "Draft top 10"}
               </button>
@@ -578,6 +679,7 @@ export default function CampaignDetailPage() {
                       >
                         {WEBSITE_STATUS_LABEL[b.websiteStatus] ?? b.websiteStatus}
                       </span>
+                      <OnlineNote verdict={b.onlineCheck} url={b.onlineCheckUrl} />
                     </td>
                     <td className="px-4 py-3 text-xs text-zinc-600 dark:text-zinc-400">
                       {contactSummary(b).length ? (
@@ -700,6 +802,24 @@ export default function CampaignDetailPage() {
       </main>
     </div>
   );
+}
+
+interface OnlineCheckState {
+  provider: string | null;
+  progress: { running: boolean; total: number; done: number; found: number; none: number; unsure: number; error: string | null } | null;
+}
+
+/** What the web search concluded about a lead with no website listed. */
+function OnlineNote({ verdict, url }: { verdict: string | null; url: string | null }) {
+  if (!verdict) return null;
+  let host = "";
+  try {
+    host = url ? new URL(url).hostname : "";
+  } catch {}
+  const text =
+    verdict === "found" ? `Found online: ${host}` : verdict === "unsure" ? `Maybe online: ${host}, check it` : "Searched: not online";
+  const tone = verdict === "unsure" ? "text-amber-700 dark:text-amber-400" : "text-zinc-500";
+  return <p className={`mt-1 whitespace-nowrap text-xs ${tone}`}>{text}</p>;
 }
 
 /** When to get back to a lead, flagged once it is due. */

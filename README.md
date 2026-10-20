@@ -12,7 +12,7 @@ This app covers stages 1–6 of that pipeline as a working tool:
 2. **Find** — pulls a raw business list from a source adapter (`src/lib/sources`).
 3. **Detect the gap** — checks each business for publicly observable signals: no website, unreachable site, no HTTPS, no mobile viewport tag, stale copyright year, thin/no reviews (`src/lib/detect.ts`). Every signal is marked `VERIFIED` or `UNCERTAIN`, and each business gets a website status: `NONE_FOUND`, `NEEDS_WORK`, `NEEDS_CHECK` or `GOOD`.
 4. **Qualify and rank** — combines gap severity with signs of a viable business (reviews, rating, phone) into a score from 0 to 100, and penalizes likely-ghost listings (`src/lib/score.ts`).
-5. **Reach out** — generates a specific, non-templated outreach draft per lead from its actual detected signals, via the Claude API (`src/lib/outreach.ts`). Each campaign has a draft language (Albanian, English, Italian, German, Greek, Serbian or Macedonian; new campaigns suggest Albanian, existing ones stay English), and each draft is for one channel: an email, a script for a phone call, or a WhatsApp/Facebook message. The channel defaults to one the lead can be reached on, email first, and every draft records which it was for.
+5. **Reach out** — fills in a draft per lead from a **message template** written by a person (`/templates`, `src/lib/templates.ts`), for the lead’s most severe verified gap, its campaign’s language and the chosen channel. Templates may use `{{name}}`, `{{business_type}}`, `{{area}}` and `{{website}}`; one written for the campaign’s business type beats a generic one, one needing a value the lead lacks is skipped, and variants rotate, least used in the campaign first. With no fitting template the draft is refused with a message naming what is missing, never improvised. The templates page shows which gap and channel combinations still need one. `DRAFT_SOURCE=claude` switches back to drafts written by the Claude API (`src/lib/outreach.ts`). Each campaign has a draft language (Albanian, English, Italian, German, Greek, Serbian or Macedonian; new campaigns suggest Albanian, existing ones stay English), and each draft is for one channel: an email, a script for a phone call, or a WhatsApp/Facebook message. The channel defaults to one the lead can be reached on, email first, and every draft records which it was for.
    **Draft top 10** on a campaign (`POST /api/campaigns/<id>/drafts`, `src/lib/drafting.ts`) drafts the highest-scoring leads that are ready for a first message (a verified gap to mention, no draft yet, stage NEW or QUALIFIED), up to 20 at a time, three in parallel. One lead's failure doesn't stop the rest; missing credentials stop it at once.
 6. **Convert / retain** — each lead has a CRM stage (New → Qualified → Contacted → Replied → Converted → Delivered → Retained / Dead) and a notes field, tracked per business.
 
@@ -47,9 +47,13 @@ Two pluggable sources behind a common interface (`src/lib/sources/types.ts`):
   block the IP running it. It's included because it gives much richer data
   (most OSM entries lack a `website` tag even when the business has one),
   but keep volumes small and infrequent if you use it. The code is capped at
-  40 listings per run by design.
+  40 listings per run by design (100 for *anything*, below). It needs a
+  Chromium browser: set `PLAYWRIGHT_CHROMIUM_PATH` to an installed Chrome or
+  Edge (`C:/Program Files/Google/Chrome/Application/chrome.exe` on Windows).
 
 The niche is either a term the OSM adapter knows (about 65, from "dentist" to "driving school", plural accepted) or, for any other business type, OpenStreetMap tags given directly: `shop=optician`, or up to five separated by commas. Tags are validated before they reach the Overpass query.
+
+**Anything** (also *any business*, *all*, *çdo biznes*, *të gjitha*) is every common kind of local business at once (`src/lib/sources/anyBusiness.ts`), for a campaign that wants a whole town. On Google Maps it runs one search per common type (24, from restaurants to driving schools; banks, fuel stations and chains are left out), reads up to 8 places from each, and opens at most 100, taken from each search in turn so every type is represented, each place once however many searches found it. On OpenStreetMap it asks for every named shop, craft and office and the amenities worth a pitch, up to 400. Before this, *Anything* went to Google as typed and found 7 places in Suharekë.
 
 Adding a new source means implementing `BusinessSource` in
 `src/lib/sources/` and registering it in `src/lib/sources/index.ts` — nothing
@@ -117,6 +121,20 @@ Coverage is thin, which is the point of showing it. In a sample of 80 dentists
 in Tirana on OpenStreetMap, 10 listed a phone, 7 an email and 3 a Facebook
 page. A lead with nothing to go on gets a web-search link on its page.
 
+## The online check
+
+A business with no website on OpenStreetMap often has one. **Check offline leads online** on a campaign (`src/lib/onlineCheck.ts`) searches the web for up to 20 leads whose site status is *None listed*, one at a time, through Groq’s `browser_search`, OpenRouter’s web plugin on a free model, or Tavily, each with its own key (`.env.example`). With more than one key set, they go in that order (`ONLINE_CHECK_PROVIDER` can name the first): when one hits its rate limit or runs out of credits, the next takes over, and the first is tried again when it said to (a minute if it didn’t). A rejected key is skipped for the rest of the run. Groq’s free plan allows 8,000 tokens a minute and 200,000 a day, and one search takes 4,000–8,000, so it covers about one lead a minute and 25–30 a day. OpenRouter’s free models allow about 50 requests a day on an account without credits; an account with no credits can’t be charged.
+
+The search only suggests pages: directories, maps and social sites are dropped, and up to five candidates, those on a domain made of the lead’s name first, are fetched through the same guarded fetcher as website checks and matched against the lead: its phone (last 8 digits, however written), its name, and its street or city. Generic words ("Klinika", "Dental") and the city’s name don’t count as the name, and a name made only of them ("Klinikë Dentare") never matches. The verdict, with its evidence, is shown on the lead:
+
+- **Found:** a page on a domain made of its name (`arberi.al` for Arbëri) shows its phone, or its name and its street or city. The page becomes the lead’s website, *No website found* is no longer claimed, and the next scan checks the site like any other. An unsent draft written before is flagged on its review card.
+- **Not online:** nothing matched; the lead really looks offline.
+- **Unsure,** flagged for a person to look at: the phone or name and street are on a page elsewhere (often a directory listing; no list of directories is complete); a namesake domain doesn’t mention the street or city (MonDent in Tirana vs. `mondent.ba` in Bosnia); a site named after the lead didn’t load (perhaps its old site); or its name and street or city are on some page.
+
+A verdict is reused for 30 days. A rate-limited search is retried up to three times, after the wait the provider asked for (20 seconds if it didn’t say, at most 65); if it is still limited, the run stops and says why, keeping the verdicts so far.
+
+These rules come from live runs on Tirana dentists listed with no website, each of which caught a wrong answer: listings on `exa.ai` and `geoview.info` taken as the site, `mondent.ba`, "Dentist ne Tirane" matching through the city, and a generic name matching another clinic.
+
 ## Website checks and certainty
 
 Business websites come from data anyone can edit, so `src/lib/safeFetch.ts` treats every URL as hostile: http(s) only, no credentials, only ports 80/443/8080/8443, every resolved IP checked at connect time (loopback, private, link-local, carrier-grade NAT, multicast, reserved and the IPv6/NAT64/6to4 equivalents are refused), redirects followed manually and re-validated per hop (max 5), one total deadline of 8 seconds covering the body, a 1 MiB size cap that also applies after decompression, and at most 8 requests in flight process-wide. Pages are read as text and never executed.
@@ -142,6 +160,10 @@ A campaign can be renamed and its draft language changed from its page (`PATCH /
 ## CRM stages
 
 Stages move forward freely (skipping is allowed), one step back is allowed to fix a mistake, any lead can be marked `DEAD`, and a dead lead can only be reopened to `NEW` or `QUALIFIED` (`src/lib/crm.ts`). Every stage change is stored in `StageChange`.
+
+**Review & send.** Each campaign has a review page (`/campaigns/<id>/review`, `src/lib/review.ts`) with one card per lead, under *Ready to send* (an unsent draft), *Needs a draft* (a verified gap and a way to reach it, still NEW or QUALIFIED) and *Sent*. Opening a card shows its message to read and edit, then the channel’s own action: open the email app with subject and text filled in, open WhatsApp with the text ready (international numbers only, so no country code is guessed), open the Facebook or Instagram page, or call. Nothing is sent by the app. **Mark as sent** saves any edits first, so the record is what went out, and a sent draft can no longer be edited.
+
+**Sending email from the app.** With `SMTP_URL`, `MAIL_FROM` and `MAIL_OPT_OUT` set (see `.env.example`), an email card has **Send email** (`POST /api/outreach/<id>/send`, `src/lib/mail.ts`). Before anything goes out it checks the draft is an unsent email, the lead has a usable address, the address and its domain are not on the do-not-contact list (`/api/do-not-contact`; a card can add its address), and fewer than `MAIL_DAILY_LIMIT` (default 20) emails went out in the last 24 hours. The opt-out line is added to every email, along with a `List-Unsubscribe` header, and nothing is sent without it. A send that the mail server refuses leaves the draft unsent; one that succeeds is recorded as sent by the app, with its Message-ID. `MAIL_DRY_RUN=1` builds the email exactly and shows it without sending. **There is no login yet:** anyone who can reach the app could send from the mailbox, so run it with `npm run start:local`, which listens on this computer only.
 
 **Pipeline.** The home page shows how many leads have reached each stage across all campaigns, and what share of contacted leads replied and of replies converted (`GET /api/pipeline`, or `?campaignId=` for one). A lead counts at the furthest stage its history shows, so one that replied and was later marked dead still counts as a reply, and skipping a stage counts as passing it.
 
