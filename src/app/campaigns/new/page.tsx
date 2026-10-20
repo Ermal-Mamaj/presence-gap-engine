@@ -64,6 +64,10 @@ export default function NewCampaignPage() {
               placeholder="Tirana, Albania"
               className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             />
+            <p className="mt-1 text-xs text-zinc-500">
+              One place, or up to 5 separated by semicolons: Suharekë, Kosovo; Rahovec, Kosovo. Each is searched in turn, so the scan
+              takes that many times as long.
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">Niche</label>

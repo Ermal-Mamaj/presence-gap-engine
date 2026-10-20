@@ -415,3 +415,15 @@ describe("online check route", () => {
     expect((await refused.json()).error).toContain("GROQ_API_KEY, OPENROUTER_API_KEY or TAVILY_API_KEY");
   });
 });
+
+describe("POST /api/campaigns: several places", () => {
+  it("accepts up to five places in a region, and refuses more", async () => {
+    const make = (region: string) => campaigns.POST(request("POST", { name: "Towns", region, niche: "cafe", source: "OSM" }));
+    expect((await make("A, X; B, X; C, X; D, X; E, X")).status).toBe(201);
+    const refused = await make("A; B; C; D; E; F");
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(await refused.json())).toContain("at most 5 places");
+    // The same place twice is one place.
+    expect((await make("A; a; B; b; C; c; D; E")).status).toBe(201);
+  });
+});

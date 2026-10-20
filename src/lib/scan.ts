@@ -11,6 +11,7 @@ import {
 } from "./detect";
 import { computeScore } from "./score";
 import type { BusinessSource, RawBusiness } from "./sources/types";
+import { splitRegions } from "./regions";
 import { sanitizeRawBusiness } from "./sources/validate";
 
 /** The campaign already has a scan in progress. */
@@ -252,7 +253,9 @@ export async function executeCampaignScan(
   const scan = { id: scanId };
 
   try {
-    let rawResults: unknown;
+    const rawResults: unknown[] = [];
+    // Places of a multi-place campaign that could not be searched, with why.
+    const failedPlaces: string[] = [];
     try {
       // The places this campaign already has, so a source can skip opening them again.
       const known = await prisma.business.findMany({ where: { campaignId, sourceRef: { not: null } }, select: { sourceRef: true } });
@@ -267,11 +270,31 @@ export async function executeCampaignScan(
         lastProgressAt = at;
         prisma.scanRun.update({ where: { id: scanId }, data: { progress: message } }).catch(() => undefined);
       };
-      rawResults = await deps.getSource(campaign.source).search({ region: campaign.region, niche: campaign.niche, onProgress, knownRefs });
+      // One search per place, one after another. A place that fails doesn't lose the others, as long
+      // as one place gets through; a campaign of a single place fails as it always has.
+      const places = splitRegions(campaign.region);
+      if (places.length === 0) places.push(campaign.region.trim());
+      const source = deps.getSource(campaign.source);
+      for (const place of places) {
+        const prefix = places.length > 1 ? `${place}: ` : "";
+        try {
+          const found: unknown = await source.search({
+            region: place,
+            niche: campaign.niche,
+            onProgress: (message) => onProgress(prefix + message),
+            knownRefs,
+          });
+          if (!Array.isArray(found)) throw new Error("Source returned an unexpected response");
+          rawResults.push(...found);
+        } catch (err) {
+          if (places.length === 1) throw err;
+          failedPlaces.push(`${place}: ${err instanceof Error ? err.message : "Discovery failed"}`);
+        }
+      }
+      if (failedPlaces.length === places.length) throw new Error(failedPlaces.join("; "));
     } catch (err) {
       throw new DiscoveryError(err instanceof Error ? err.message : "Discovery failed");
     }
-    if (!Array.isArray(rawResults)) throw new DiscoveryError("Source returned an unexpected response");
 
     let skipped = 0;
     const unique = new Map<string, RawBusiness>();
@@ -382,7 +405,18 @@ export async function executeCampaignScan(
       }
       await tx.scanRun.update({
         where: { id: scan.id },
-        data: { status: "SUCCEEDED", found: prepared.length, created, updated, skipped, deferred, progress: null, finishedAt: now() },
+        data: {
+          status: "SUCCEEDED",
+          found: prepared.length,
+          created,
+          updated,
+          skipped,
+          deferred,
+          progress: null,
+          // A scan that got some places through is a success, but says which it could not search.
+          errorMessage: failedPlaces.length ? `Not searched, so their businesses are missing (run again to retry): ${failedPlaces.join("; ")}` : null,
+          finishedAt: now(),
+        },
       });
       await tx.campaign.update({ where: { id: campaignId }, data: { status: "DONE", errorMessage: null } });
     }, TRANSACTION_OPTIONS);
