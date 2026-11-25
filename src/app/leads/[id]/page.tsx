@@ -525,7 +525,9 @@ export default function LeadDetailPage() {
                 ? "Found online"
                 : business.onlineCheck === "unsure"
                   ? "Maybe online, worth a look"
-                  : "Searched the web: no site of its own"}
+                  : business.onlineCheck === "listed"
+                    ? "Only in directories: no site of its own"
+                    : "Searched the web: no site of its own"}
             </span>
             {business.onlineCheckUrl && safeHttpUrl(business.onlineCheckUrl) && (
               <>

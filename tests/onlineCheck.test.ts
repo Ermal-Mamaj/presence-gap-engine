@@ -502,3 +502,48 @@ describe("problems found in review", () => {
     expect(await fallbackProvider([first, next], () => 0).search(target)).toEqual(["https://arberi.al"]);
   });
 });
+
+describe("a directory listing is not a site of its own", () => {
+  // Found live: dyqani.app and restaurantguru.com list the lead's phone beside hundreds of others.
+  const others = (n: number) => Array.from({ length: n }, (_, i) => `<li>+355 69 ${String(100 + i).padStart(3, "0")} ${String(1000 + i)}</li>`).join("");
+
+  it("is 'listed' when its phone is on a page of many other numbers", async () => {
+    const result = await checkLeadOnline(target, {
+      provider: provider(["https://places.example/arberi"]),
+      fetchPage: async (url) => page(url.toString(), `<h1>Klinika Dentare Arbëri</h1><p>+355 69 123 4567</p><ul>${others(40)}</ul>`),
+    });
+    expect(result).toMatchObject({ verdict: "listed", url: "https://places.example/arberi" });
+    expect(result.evidence.at(-1)).toMatch(/directory/);
+  });
+
+  it("is still 'unsure' for a page with only a few numbers on another domain", async () => {
+    const result = await checkLeadOnline(target, {
+      provider: provider(["https://rad-barbershop.square.site/"]),
+      fetchPage: async (url) => page(url.toString(), `<p>Klinika Arbëri +355 69 123 4567, Tel 044 111 222</p>`),
+    });
+    expect(result.verdict).toBe("unsure");
+  });
+
+  it("is only 'listed' if nothing looked like a site of its own", async () => {
+    const result = await checkLeadOnline(target, {
+      provider: provider(["https://places.example/arberi", "https://maybe.example"]),
+      fetchPage: async (url) =>
+        page(url.toString(), url.hostname === "places.example" ? `Arbëri +355 69 123 4567 ${others(40)}` : "Arbëri, Tiranë"),
+    });
+    expect(result.verdict).toBe("unsure");
+  });
+
+  it("never turns a lead's own domain into a listing, however many numbers it shows", async () => {
+    const result = await checkLeadOnline(target, {
+      provider: provider(["https://arberi.al"]),
+      fetchPage: async (url) => page(url.toString(), `Arbëri +355 69 123 4567 ${others(40)}`),
+    });
+    expect(result.verdict).toBe("found");
+  });
+
+  it("skips the registry and directories seen live, without fetching them", () => {
+    for (const url of ["https://arbk.org/biz/dental-praxis-shpk/", "https://dyqani.app/places/cafe/soho", "https://restaurantguru.com/x"]) {
+      expect(couldBeOwnSite(url)).toBe(false);
+    }
+  });
+});

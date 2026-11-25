@@ -14,11 +14,13 @@ import { computeScore } from "./score";
  *   name. It becomes the lead's website, so the next scan checks it like any
  *   other, and "no website" is no longer claimed.
  * - none: nothing matched. The lead really looks offline.
- * - unsure: a page elsewhere matched (possibly a directory listing), or only
- *   the name did. Flagged for a person to look at.
+ * - listed: its phone is on a page that lists a hundred other businesses'
+ *   numbers: a directory. It is in directories and has no site of its own.
+ * - unsure: a page elsewhere matched, or only the name did. Flagged for a
+ *   person to look at.
  */
 
-export type Verdict = "found" | "none" | "unsure";
+export type Verdict = "found" | "none" | "unsure" | "listed";
 
 export interface CheckResult {
   verdict: Verdict;
@@ -308,6 +310,9 @@ function isAreaWord(word: string, area: string): boolean {
     .some((w) => w.length >= 4 && word.slice(0, 5) === w.slice(0, 5));
 }
 
+// A run of digits and the usual separators; one run can hold several numbers listed together.
+const PHONE_RUN = /\+?\d[\d\s().\-/]{6,}\d/g;
+
 /** The last 8 digits, enough to match a number written with or without its country code. */
 function phoneKey(phone: string | null | undefined): string | null {
   const digits = (phone ?? "").replace(/\D/g, "");
@@ -327,7 +332,7 @@ function streetTokens(address: string | null | undefined, area: string): string[
 export function matchPage(
   target: CheckTarget,
   page: { url: string; html: string }
-): { strong: boolean; phone: boolean; name: boolean; local: boolean; ownDomain: boolean; evidence: string[] } {
+): { strong: boolean; phone: boolean; phoneCount: number; name: boolean; local: boolean; ownDomain: boolean; evidence: string[] } {
   const text = normalize(page.html.replace(/<[^>]+>/g, " "));
   const evidence: string[] = [];
 
@@ -335,7 +340,7 @@ export function matchPage(
   const phoneOnPage =
     key !== null &&
     // Numbers in a list are separated by "/" or "-", so one run can hold several: look anywhere in it.
-    [...page.html.matchAll(/\+?\d[\d\s().\-/]{6,}\d/g)].some((m) => m[0].replace(/\D/g, "").includes(key));
+    [...page.html.matchAll(PHONE_RUN)].some((m) => m[0].replace(/\D/g, "").includes(key));
   if (phoneOnPage) evidence.push(`its phone number (${target.phone}) is on the page`);
 
   // A name made only of generic words ("Klinikë Dentare", "Dentist në Tiranë") is on
@@ -362,11 +367,26 @@ export function matchPage(
   return {
     strong: phoneOnPage || (name && Boolean(street || domainName)),
     phone: phoneOnPage,
+    phoneCount: distinctPhones(page.html),
     name,
     local,
     ownDomain: domainName !== null,
     evidence,
   };
+}
+
+// A site shows a handful of numbers (an owner's, a landline, a mobile); a directory shows
+// hundreds. Past this many, a page listing the lead's phone is a directory.
+const DIRECTORY_PHONE_COUNT = 15;
+
+/** How many different phone numbers a page shows. */
+function distinctPhones(html: string): number {
+  const numbers = new Set<string>();
+  for (const m of html.matchAll(PHONE_RUN)) {
+    const digits = m[0].replace(/\D/g, "");
+    if (digits.length >= 8 && digits.length <= 13) numbers.add(digits.slice(-8));
+  }
+  return numbers.size;
 }
 
 /**
@@ -395,6 +415,8 @@ const DIRECTORY_DOMAINS = [
   // Seen in live Groq searches for Tirana dentists: each lists the business's phone and street.
   "exa.ai", "geoview.info", "gjirafa.biz", "pikark.com", "dentists10.com", "near-place.com", "albaniayp.com",
   "maps24.net", "openalfa.com", "supernet.al", "dentaltourismalbania.com", "on-mend.com",
+  // Seen in the Suharekë run: a business registry, and directories that listed the phone.
+  "arbk.org", "dyqani.app", "restaurantguru.com", "fastbase.com", "trustalbania.com", "denti-albania.com", "ussh.org.al",
 ];
 // ...and by a word in the host name.
 const DIRECTORY_WORDS = ["google.", "yelp.", "tripadvisor.", "cylex", "yellowpages", "opendi", "infobel", "kompass", "hotfrog", "zoomaal"];
@@ -438,6 +460,7 @@ export async function checkLeadOnline(target: CheckTarget, deps: CheckDeps): Pro
   const candidates = [...urls.filter((u) => nameInDomain(target, u)), ...urls.filter((u) => !nameInDomain(target, u))].slice(0, MAX_CANDIDATES);
 
   let closeCall: CheckResult | null = null;
+  let listed: CheckResult | null = null;
   let deadNamesake: CheckResult | null = null;
   let maybe: CheckResult | null = null;
   for (const candidate of candidates) {
@@ -459,6 +482,11 @@ export async function checkLeadOnline(target: CheckTarget, deps: CheckDeps): Pro
     if (match.ownDomain && (match.phone || (match.name && match.local))) {
       return { verdict: "found", url: page.finalUrl, evidence: match.evidence };
     }
+    if (match.phone && !match.ownDomain && match.phoneCount >= DIRECTORY_PHONE_COUNT) {
+      const evidence = [...match.evidence, `the page lists ${match.phoneCount} phone numbers, so it is a directory`];
+      listed ??= { verdict: "listed", url: page.finalUrl, evidence };
+      continue;
+    }
     if (match.strong && !closeCall) {
       const why = match.ownDomain
         ? `but the page mentions neither its street nor ${target.area}, so it may be another business with this name`
@@ -468,7 +496,8 @@ export async function checkLeadOnline(target: CheckTarget, deps: CheckDeps): Pro
     // The name alone, with no sign of the street or area, is likely a namesake elsewhere.
     if (match.name && match.local && !maybe) maybe = { verdict: "unsure", url: page.finalUrl, evidence: match.evidence };
   }
-  const best = closeCall ?? deadNamesake ?? maybe;
+  // A directory listing is the answer only if nothing looked like a site of its own.
+  const best = closeCall ?? deadNamesake ?? maybe ?? listed;
   if (best) return best;
   return {
     verdict: "none",
@@ -495,6 +524,7 @@ export interface CheckProgress {
   found: number;
   none: number;
   unsure: number;
+  listed: number;
   error: string | null;
 }
 
@@ -582,7 +612,7 @@ export async function runOnlineCheck(prisma: PrismaClient, campaignId: string, l
   if (runs.get(campaignId)?.running) throw new CheckInProgressError();
 
   // Claimed before the first await, so two starts at once can't both run.
-  const progress: CheckProgress = { running: true, total: 0, done: 0, found: 0, none: 0, unsure: 0, error: null };
+  const progress: CheckProgress = { running: true, total: 0, done: 0, found: 0, none: 0, unsure: 0, listed: 0, error: null };
   runs.set(campaignId, progress);
 
   const now = deps.now ?? (() => new Date());
