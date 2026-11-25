@@ -46,6 +46,7 @@ interface MailStatus {
 
 interface Queue {
   campaign: { id: string; name: string };
+  dialCode: string | null;
   ready: Card[];
   needsDraft: Card[];
   sent: Card[];
@@ -180,7 +181,13 @@ export default function ReviewPage() {
 
             <div className="lg:sticky lg:top-6 lg:self-start">
               {current ? (
-                <CardDetail key={`${current.leadId}:${current.draft?.id ?? "none"}`} card={current} mail={mail} onChanged={load} />
+                <CardDetail
+                  key={`${current.leadId}:${current.draft?.id ?? "none"}`}
+                  card={current}
+                  mail={mail}
+                  dialCode={queue?.dialCode ?? null}
+                  onChanged={load}
+                />
               ) : (
                 cards.length > 0 && <p className="text-sm text-zinc-500">Pick a card to read its message.</p>
               )}
@@ -231,10 +238,12 @@ function Contacts({ card }: { card: Card }) {
 function CardDetail({
   card,
   mail,
+  dialCode,
   onChanged,
 }: {
   card: Card;
   mail: MailStatus | null;
+  dialCode: string | null;
   onChanged: () => Promise<void> | void;
 }) {
   const draft = card.draft;
@@ -283,7 +292,7 @@ function CardDetail({
   }
 
   const email = normalizeEmail(card.email);
-  const whatsapp = whatsappLink(card.phone);
+  const whatsapp = whatsappLink(card.phone, dialCode);
   const facebook = safeHttpUrl(card.facebook);
   const instagram = safeHttpUrl(card.instagram);
   const phone = normalizePhone(card.phone);

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { whatsappLink } from "@/lib/contacts";
+import { campaignDialCode, whatsappLink } from "@/lib/contacts";
 import { DraftAlreadySentError, draftEditSchema, DraftNotFoundError, editDraft, reviewQueue } from "@/lib/review";
 import { createTestDb } from "./helpers/db";
 
@@ -96,5 +96,49 @@ describe("reviewQueue: drafts overtaken by the web check", () => {
     await prisma.business.update({ where: { id }, data: { onlineCheck: "found", onlineCheckedAt: new Date(Date.now() + 1000) } });
     const q = await reviewQueue(prisma, campaignId);
     expect(q.ready.find((c) => c.leadId === id)?.draft?.outdated).toBe(true);
+  });
+});
+
+describe("WhatsApp for local numbers", () => {
+  it("puts the campaign's country code in place of a leading 0", () => {
+    // Found in the Suharekë campaign: 9 of 83 numbers, like 048100026, had no link.
+    expect(whatsappLink("048100026", "383")).toBe("https://wa.me/38348100026");
+    expect(whatsappLink("049 123 456", "383")).toBe("https://wa.me/38349123456");
+    expect(whatsappLink("069 123 4567", "355")).toBe("https://wa.me/355691234567");
+    expect(whatsappLink("00383 49 123 456", "355")).toBe("https://wa.me/38349123456");
+    expect(whatsappLink("+355 69 123 4567", "383")).toBe("https://wa.me/355691234567"); // already international
+  });
+
+  it("still won't guess: no country, or a number that doesn't start with 0", () => {
+    expect(whatsappLink("048100026", null)).toBeUndefined();
+    expect(whatsappLink("48100026", "383")).toBeUndefined();
+    expect(whatsappLink("012", "383")).toBeUndefined();
+  });
+});
+
+describe("campaignDialCode", () => {
+  it("reads the country from the area", () => {
+    expect(campaignDialCode("Suharekë, Kosovo", [])).toBe("383");
+    expect(campaignDialCode("Tiranë, Shqipëri", [])).toBe("355");
+    expect(campaignDialCode("Skopje, North Macedonia", [])).toBe("389");
+    // The area outranks the numbers: a border town has both.
+    expect(campaignDialCode("Prizren, Kosova", ["+355 69 1", "+355 69 2", "+355 69 3"])).toBe("383");
+  });
+
+  it("falls back on the country most of the campaign's own numbers are in", () => {
+    const kosovo = ["+383 49 111 111", "+38349222222", "+383 44 333 333", "045 575 597"];
+    expect(campaignDialCode("Suhareka", kosovo)).toBe("383");
+  });
+
+  it("gives up when it isn't clear, rather than guess", () => {
+    expect(campaignDialCode("Suhareka", [])).toBeNull();
+    expect(campaignDialCode("Suhareka", ["+383 49 111 111", "+383 49 222 222"])).toBeNull(); // too few
+    const mixed = ["+383 49 111 111", "+383 49 222 222", "+383 49 333 333", "+355 69 444 4444", "+355 69 555 5555", "+355 69 666 6666"];
+    expect(campaignDialCode("Border", mixed)).toBeNull();
+  });
+
+  it("is on the review queue", async () => {
+    const c = await prisma.campaign.create({ data: { name: "k", region: "Suharekë, Kosovo", niche: "anything" } });
+    expect((await reviewQueue(prisma, c.id)).dialCode).toBe("383");
   });
 });
