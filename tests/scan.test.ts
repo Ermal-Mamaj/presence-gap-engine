@@ -94,7 +94,12 @@ describe("a successful scan", () => {
   it("passes the campaign's region and niche to the source", async () => {
     const search = vi.fn(async () => [biz(1)]);
     await scan(campaignId, sourceOf(search));
-    expect(search).toHaveBeenCalledWith({ region: "Prizren", niche: "dentist" });
+    expect(search).toHaveBeenCalledWith({
+      region: "Prizren",
+      niche: "dentist",
+      onProgress: expect.any(Function),
+      knownRefs: new Set(),
+    });
   });
 
   it("asks for the source named by the campaign", async () => {
@@ -762,5 +767,65 @@ describe("where an email came from", () => {
     expect((await leads(campaignId))[0]).toMatchObject({ email: "site@one.al", emailFromSite: true });
     await scan(campaignId, returning([biz(1, { website: "one.al", email: "owner@one.al" })]));
     expect((await leads(campaignId))[0]).toMatchObject({ email: "owner@one.al", emailFromSite: false });
+  });
+});
+
+describe("a long search", () => {
+  it("reports its progress while it runs, and clears it when it ends", async () => {
+    const claim = await claimCampaignScan(prisma, campaignId);
+    let seen: string | null = null;
+    await executeCampaignScan(prisma, claim, {
+      analyze: fakeAnalyze,
+      getSource: sourceOf(async ({ onProgress }) => {
+        onProgress?.('Searching "cafe in Suharek" (5/24)');
+        // The write is not awaited by the source; give it a moment, as a real search does.
+        await new Promise((r) => setTimeout(r, 50));
+        seen = (await prisma.scanRun.findUniqueOrThrow({ where: { id: claim.scanId } })).progress;
+        return [biz(1)];
+      }),
+    });
+    expect(seen).toBe('Searching "cafe in Suharek" (5/24)');
+    expect((await prisma.scanRun.findUniqueOrThrow({ where: { id: claim.scanId } })).progress).toBeNull();
+  });
+
+  it("keeps the scan from being taken over while the search itself outlasts the stale window", async () => {
+    // Found live: a Google Maps search took 22 minutes and only website checks refreshed the claim.
+    const staleAfterMs = 1000;
+    let clock = Date.now();
+    const now = () => new Date(clock);
+    const claim = await claimCampaignScan(prisma, campaignId, { now, staleAfterMs });
+    let rival: unknown;
+    await executeCampaignScan(prisma, claim, {
+      analyze: fakeAnalyze,
+      staleAfterMs,
+      now,
+      getSource: sourceOf(async ({ onProgress }) => {
+        for (let i = 1; i <= 4; i++) {
+          clock += 600;
+          onProgress?.(`Searching (${i}/4)`);
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        rival = await claimCampaignScan(prisma, campaignId, { now, staleAfterMs }).catch((err: unknown) => err);
+        return [biz(1)];
+      }),
+    });
+    expect(rival).toBeInstanceOf(ScanConflictError);
+  });
+
+  it("tells the source which places the campaign already has, by their stable reference", async () => {
+    const first = "gmaps:https://www.google.com/maps/place/Troi/data=!4m7!3m6!1s0x1353a1:0xabc!8m2?authuser=0&hl=en";
+    await scan(campaignId, returning([biz(1, { sourceRef: first }), biz(2, { sourceRef: "osm:node/2" })]));
+    let known: ReadonlySet<string> | undefined;
+    await scan(
+      campaignId,
+      sourceOf(async ({ knownRefs }) => {
+        known = knownRefs;
+        return [biz(1, { sourceRef: first })];
+      })
+    );
+    // The same place found by another search has another query string; its stable reference is the same.
+    expect(known?.has("gmaps:0x1353a1:0xabc")).toBe(true);
+    expect(known?.has("osm:node/2")).toBe(true);
+    expect(known?.size).toBe(2);
   });
 });

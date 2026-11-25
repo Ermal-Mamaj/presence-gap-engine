@@ -12,7 +12,7 @@ function normalizeText(value: string | undefined | null): string {
 // Google Maps place URLs embed a stable feature id ("!1s0x...:0x...") next to
 // per-search tracking data. Keying on the whole URL would make every rerun look
 // like a new business.
-function stableSourceRef(sourceRef: string): string {
+export function stableSourceRef(sourceRef: string): string {
   if (sourceRef.startsWith("gmaps:")) {
     const featureId = sourceRef.match(/!1s([^!?&/]+)/)?.[1];
     if (featureId) return `gmaps:${featureId}`;

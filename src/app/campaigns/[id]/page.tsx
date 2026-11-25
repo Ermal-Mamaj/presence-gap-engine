@@ -89,6 +89,8 @@ interface ScanRun {
   updated: number;
   skipped: number;
   deferred: number;
+  /** What a running scan is doing now. */
+  progress?: string | null;
   startedAt: string;
   finishedAt: string | null;
 }
@@ -439,6 +441,7 @@ export default function CampaignDetailPage() {
               Scanning since {formatTimestamp(latestScan?.startedAt)}. Checking each website takes a few
               seconds, so a large campaign can run for minutes.
             </p>
+            {latestScan?.progress && <p className="mt-1 font-medium">{latestScan.progress}</p>}
             {/* The scan no longer depends on this request, so saying so is
                 accurate as well as reassuring. */}
             <p className="mt-1 text-amber-700 dark:text-amber-400">

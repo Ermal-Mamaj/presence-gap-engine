@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ANY_BUSINESS_SEARCHES, ANY_BUSINESS_TAGS, isAnyBusiness } from "@/lib/sources/anyBusiness";
-import { mergeListings, placeKey, searchPlan } from "@/lib/sources/googleMapsScraper";
+import { mergeListings, placeKey, searchPlan, splitKnown } from "@/lib/sources/googleMapsScraper";
 import { buildOverpassQuery, tagsForNiche } from "@/lib/sources/osm";
 
 describe("isAnyBusiness", () => {
@@ -67,5 +67,21 @@ describe("OpenStreetMap: the heavy query", () => {
     // The client gives up on an Overpass attempt after 40s; a longer server timeout only wastes the attempt.
     const query = buildOverpassQuery(["1", "2", "3", "4"], ["shop=*"], 400);
     expect(query).toContain("[timeout:40]");
+  });
+});
+
+describe("splitKnown: places a campaign already has", () => {
+  const l = (name: string, id: string, query = "hl=en") => ({ name, href: `https://www.google.com/maps/place/${name}/data=!1s0x1:0x${id}?${query}` });
+
+  it("leaves known places unopened, whichever search found them", () => {
+    const known = new Set(["gmaps:0x1:0x1"]);
+    const { fresh, known: skipped } = splitKnown([l("Troi", "1", "authuser=0&rclk=1"), l("Suare", "2")], known);
+    expect(fresh.map((p) => p.name)).toEqual(["Suare"]);
+    expect(skipped.map((p) => p.name)).toEqual(["Troi"]);
+  });
+
+  it("opens everything when nothing is known", () => {
+    expect(splitKnown([l("Troi", "1")], undefined).fresh).toHaveLength(1);
+    expect(splitKnown([l("Troi", "1")], new Set()).known).toHaveLength(0);
   });
 });

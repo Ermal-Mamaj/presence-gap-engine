@@ -19,6 +19,10 @@ export interface SearchBox {
   region: string; // free-text place name, e.g. "Tirana, Albania"
   niche: string; // free-text business type, e.g. "dentist"
   limit?: number;
+  /** Says what the search is doing now, for a scan that takes minutes. Optional to call. */
+  onProgress?: (message: string) => void;
+  /** Places this campaign already has (stable references, see stableSourceRef): a source may skip opening their details. */
+  knownRefs?: ReadonlySet<string>;
 }
 
 export interface BusinessSource {
