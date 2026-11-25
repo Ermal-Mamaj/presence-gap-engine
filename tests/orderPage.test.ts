@@ -28,25 +28,31 @@ afterAll(async () => {
 const ENV = { ORDER_PAGE_URL: "https://orders.example", ORDER_PAGE_STATS_KEY: "k" };
 
 describe("sellsParcelGoods", () => {
-  it.each(["clothes", "Clothing store", "women's clothing store", "shop=clothes", "shop=shoes, shop=cosmetics", "Butik", "dyqan këpucësh", "Kozmetikë", "parfumeri"])(
+  it.each(["clothes", "Clothing store", "women's clothing store", "shop=clothes", "shop=shoes, shop=cosmetics", "Butik", "dyqan këpucësh", "Kozmetikë", "parfumeri", "toy store", "book store", "watch store", "sports shop", "baby shop", "leather goods", "bags", "fabric store", "phone store", "dyqan dhuratash"])(
     "%s sells parcels",
     (niche) => expect(sellsParcelGoods(niche)).toBe("yes")
   );
-  it.each(["dentist", "restaurant", "furniture", "florist", "shop=bakery", "cosmic ray lab", "workshoe"])("%s does not", (niche) =>
+  it.each(["dentist", "restaurant", "furniture", "florist", "shop=bakery", "cosmic ray lab", "workshoe", "boutique hotel", "cosmetic dentist", "cosmetic surgery", "shoe repair", "gift wrapping", "libraries", "sallon kozmetik"])("%s does not", (niche) =>
     expect(sellsParcelGoods(niche)).toBe("no")
   );
-  it.each(["anything", "çdo biznes", "shop=*", "shop=clothes, shop=bakery"])("%s covers several kinds", (niche) =>
+  it.each(["anything", "çdo biznes", "shop=*", "shop=clothes, shop=bakery", "shop", "dyqane"])("%s covers several kinds", (niche) =>
     expect(sellsParcelGoods(niche)).toBe("unknown")
   );
 });
 
 describe("isMobile", () => {
-  it.each(["049 123 456", "+383 49 123 456", "+383 (0)44 123 456", "00383 45 123456", "+355 69 123 4567", "069 123 4567"])("%s", (n) =>
-    expect(isMobile(n)).toBe(true)
+  it.each(["049 123 456", "+383 49 123 456", "+383 (0)44 123 456", "+383 049 123 456", "00383 45123456", "+355 69 123 4567", "069 123 4567", "038 200 200 / 045 123 456"])(
+    "%s",
+    (n) => expect(isMobile(n, "Prizren, Kosovo")).toBe(true)
   );
-  it.each(["038 123 456", "+383 38 123 456", "+355 4 123 4567", "+49 151 12345678", "", null, "abc"])("not %s", (n) =>
-    expect(isMobile(n)).toBe(false)
+  it.each(["038 123 456", "+383 38 123 456", "+383 038749673", "+3834419636", "+355 4 123 4567", "+49 151 12345678", "", null, "abc"])("not %s", (n) =>
+    expect(isMobile(n, "Prizren, Kosovo")).toBe(false)
   );
+  it("takes a local 04x number for a mobile only in Kosovo", () => {
+    for (const region of ["Prishtinë", "Pejë", "Suharek, Kosovo"]) expect(isMobile("04 4500 123", region)).toBe(true);
+    for (const region of ["Tirana", "Albania", ""]) expect(isMobile("04 4500 123", region)).toBe(false);
+    expect(isMobile("069 123 4567", "Tirana")).toBe(true);
+  });
 });
 
 const shop = {
@@ -54,7 +60,7 @@ const shop = {
   phone: "049 123 456",
   instagram: "https://www.instagram.com/ana",
   websiteStatus: "NONE_FOUND",
-  campaign: { niche: "clothes" },
+  campaign: { niche: "clothes", region: "Prizren" },
 };
 
 describe("orderPageFit", () => {
@@ -69,13 +75,15 @@ describe("orderPageFit", () => {
     ["has a website that could not be checked", { websiteStatus: "NEEDS_CHECK" }],
     ["had its website found by the web search", { onlineCheck: "found" }],
     ["cannot be reached", { phone: null, instagram: null }],
-    ["sells something else", { campaign: { niche: "dentist" } }],
+    ["sells something else", { campaign: { niche: "dentist", region: "Prizren" } }],
   ])("leaves out one that %s", (_, change) => expect(orderPageFit({ ...shop, ...change })).toBeNull());
 
   it("judges by name in a campaign for anything, and says it is a guess", () => {
-    const any = { campaign: { niche: "anything" } };
+    const any = { campaign: { niche: "anything", region: "Prizren" } };
     expect(orderPageFit({ ...shop, ...any })!.reasons).toContain("Its name suggests goods that go in a parcel (check)");
     expect(orderPageFit({ ...shop, ...any, name: "Pizzeria Era" })).toBeNull();
+    expect(orderPageFit({ ...shop, ...any, name: "Dr. Dhurata Hoxha" })).toBeNull();
+    expect(orderPageFit({ ...shop, ...any, name: "Boutique Hotel Prizreni" })).toBeNull();
   });
 });
 
@@ -115,6 +123,7 @@ describe("fetchTrialStats", () => {
   it.each([
     ["not configured", {}, answer(200, { refs })],
     ["no key", { ORDER_PAGE_URL: ENV.ORDER_PAGE_URL }, answer(200, { refs })],
+    ["an address that is not https", { ORDER_PAGE_URL: "orders.example" }, answer(200, { refs })],
     ["a wrong key", ENV, answer(401, {})],
     ["a server error", ENV, answer(500, {})],
     ["an unexpected answer", ENV, answer(200, { refs: { gx: { view: "2" } } })],
@@ -132,6 +141,7 @@ describe("with a database", () => {
   beforeEach(async () => {
     await prisma.outreach.deleteMany();
     await prisma.messageTemplate.deleteMany();
+    await prisma.doNotContact.deleteMany();
     await prisma.campaign.deleteMany();
     campaignId = (await prisma.campaign.create({ data: { name: "Clothes", region: "Prizren", niche: "clothes", language: "sq" } })).id;
   });
@@ -159,6 +169,62 @@ describe("with a database", () => {
     const contacted = await add("Ana Butik", { phone: "+383 49 123 456", crmStage: "CONTACTED" });
     const list = await orderPageCandidates(prisma, null, ENV);
     expect(list.map((c) => c.leadId)).toEqual([contacted.id]);
+  });
+
+  describe("a shop that several campaigns found", () => {
+    const names = async (stats: Parameters<typeof orderPageCandidates>[1] = null) =>
+      (await orderPageCandidates(prisma, stats, ENV)).map((c) => c.name);
+
+    it.each([
+      ["said no", { crmStage: "DEAD" }],
+      ["is a customer", { crmStage: "DELIVERED" }],
+      ["has a website", { websiteStatus: "GOOD", website: "https://ana.example" }],
+      ["had its website found", { onlineCheck: "found" }],
+    ])("is left out when one copy %s", async (_, change) => {
+      await add("Ana", change);
+      await add("Ana Butik");
+      await add("Other", { phone: "044 999 888" });
+      expect(await names()).toEqual(["Other"]);
+    });
+    it("is left out when its address opted out", async () => {
+      await prisma.doNotContact.create({ data: { value: "ana.example" } });
+      await add("Ana", { email: "info@ana.example" });
+      await add("Ana Butik");
+      expect(await names()).toEqual([]);
+    });
+    it("shows the copy furthest along, not the higher score", async () => {
+      await add("Qualified", { crmStage: "QUALIFIED", score: 80 });
+      await add("Contacted", { crmStage: "CONTACTED", score: 50 });
+      expect(await names()).toEqual(["Contacted"]);
+    });
+    it("prefers a copy whose link was opened to one only qualified", async () => {
+      await add("Qualified", { crmStage: "QUALIFIED", score: 80 });
+      const opened = await add("Opened");
+      expect(await names({ [trialCode(opened.id)]: { view: 1, demo: 0, demo_order: 0, signup: 0 } })).toEqual(["Opened"]);
+    });
+    it("joins what the copies know, through a third, and adds up their visits", async () => {
+      const a = await add("A", { crmStage: "CONTACTED" });
+      const b = await add("B", { instagram: "https://www.instagram.com/Ana" });
+      await add("C", { phone: null, instagram: "https://www.instagram.com/ana", facebook: "https://www.facebook.com/ana" });
+      const stats = {
+        [trialCode(a.id)]: { view: 1, demo: 0, demo_order: 0, signup: 0 },
+        [trialCode(b.id)]: { view: 2, demo: 1, demo_order: 1, signup: 1 },
+      };
+      const list = await orderPageCandidates(prisma, stats, ENV);
+      expect(list).toHaveLength(1);
+      expect(list[0]).toMatchObject({ name: "A", visits: { view: 3, demo: 1, demo_order: 1, signup: 1 }, facebook: "https://www.facebook.com/ana" });
+      expect(list[0].instagram!.toLowerCase()).toBe("https://www.instagram.com/ana");
+      expect(list[0].link).toBe(trialLink(a.id, ENV));
+    });
+    it("keeps two shops apart when they share a number but not a page", async () => {
+      await add("One", { instagram: "https://www.instagram.com/one" });
+      await add("Two", { instagram: "https://www.instagram.com/two" });
+      expect(await names()).toEqual(["One", "Two"]);
+    });
+  });
+  it("carries the email of a shop reachable only by email", async () => {
+    await add("Mail", { phone: null, email: "info@mail.example" });
+    expect((await orderPageCandidates(prisma, null, ENV))[0]).toMatchObject({ email: "info@mail.example", phone: null });
   });
 
   describe("{{order_page}} in a template", () => {

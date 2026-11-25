@@ -89,6 +89,7 @@ export default async function OrderPageShops() {
                         );
                       })}
                       {s.phone}
+                      {s.email && <div className="break-all">{s.email}</div>}
                     </td>
                     <td className={`${CELL} font-mono text-xs break-all select-all`}>{s.link ?? "—"}</td>
                     <td className={CELL}>{s.visits ? s.visits.view : "—"}</td>
