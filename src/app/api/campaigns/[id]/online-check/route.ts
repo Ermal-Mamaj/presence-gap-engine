@@ -1,5 +1,6 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { checkProgress, configuredProvider, DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT, runOnlineCheck } from "@/lib/onlineCheck";
+import { guessOwnSite } from "@/lib/domainGuess";
 import { prisma } from "@/lib/prisma";
 
 type Params = { params: Promise<{ id: string }> };
@@ -35,7 +36,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
   after(async () => {
     try {
-      await runOnlineCheck(prisma, id, (limit as number | undefined) ?? DEFAULT_CHECK_LIMIT);
+      await runOnlineCheck(prisma, id, (limit as number | undefined) ?? DEFAULT_CHECK_LIMIT, { guessSite: guessOwnSite });
     } catch (err) {
       console.error(`Online check for campaign ${id} failed`, err);
     }

@@ -267,7 +267,7 @@ export function configuredProvider(): SearchProvider | null {
 
 // ---- Matching ----------------------------------------------------------------
 
-const normalize = (s: string) =>
+export const normalize = (s: string) =>
   s
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
@@ -296,7 +296,7 @@ function significantTokens(name: string, area: string): string[] {
 }
 
 /** The words of a name that are neither generic nor the area's, however short ("aa"). */
-function ownWords(name: string, area: string): string[] {
+export function ownWords(name: string, area: string): string[] {
   return normalize(name)
     .split(" ")
     .filter((t) => t.length > 0 && !GENERIC.has(t) && !isAreaWord(t, area));
@@ -560,6 +560,8 @@ export async function applyVerdict(prisma: PrismaClient, leadId: string, result:
 }
 
 export interface RunDeps extends Partial<CheckDeps> {
+  /** Tries the lead's likely domains before a search is spent on it (guessOwnSite). Off unless given. */
+  guessSite?: (target: CheckTarget) => Promise<CheckResult | null>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
 }
@@ -592,7 +594,8 @@ export async function runOnlineCheck(prisma: PrismaClient, campaignId: string, l
     progress.total = leads.length;
     for (const lead of leads) {
       const target = { name: lead.name, phone: lead.phone, address: lead.address, niche: lead.campaign.niche, area: lead.campaign.region };
-      let result: CheckResult | null = null;
+      const guessed = (await deps.guessSite?.(target)) ?? null;
+      let result: CheckResult | null = guessed?.verdict === "found" ? guessed : null;
       for (let attempt = 0; !result; attempt++) {
         try {
           result = await checkLeadOnline(target, { provider, fetchPage: deps.fetchPage });
@@ -602,6 +605,8 @@ export async function runOnlineCheck(prisma: PrismaClient, campaignId: string, l
           await sleep(Math.min(Math.max(err.retryAfterMs ?? BUSY_WAIT_MS, 1_000), MAX_BUSY_WAIT_MS));
         }
       }
+      // A search that found nothing doesn't overrule a page that may be theirs.
+      if (result.verdict === "none" && guessed) result = guessed;
       await applyVerdict(prisma, lead.id, result, now());
       progress.done++;
       progress[result.verdict]++;
