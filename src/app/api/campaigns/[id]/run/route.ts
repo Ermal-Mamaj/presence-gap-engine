@@ -1,4 +1,5 @@
 import { after, NextRequest, NextResponse } from "next/server";
+import { guessOwnSite } from "@/lib/domainGuess";
 import { prisma } from "@/lib/prisma";
 import {
   CampaignNotFoundError,
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
     if (!checkOnline) return;
     try {
-      await runOnlineCheck(prisma, id, DEFAULT_CHECK_LIMIT);
+      await runOnlineCheck(prisma, id, DEFAULT_CHECK_LIMIT, { guessSite: guessOwnSite });
     } catch (err) {
       console.error(`Online check after the scan of campaign ${id} failed`, err);
     }

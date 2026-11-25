@@ -419,6 +419,32 @@ describe("runOnlineCheck", () => {
     expect(search).toHaveBeenCalledTimes(1);
   });
 
+  it("spends no search on a lead whose site was guessed", async () => {
+    const lead = await offlineLead("Arbëri");
+    const search = vi.fn(async () => []);
+    await runOnlineCheck(prisma, campaignId, 20, {
+      provider: { name: "tavily", search },
+      guessSite: async () => ({ verdict: "found", url: "https://arberi.al/", evidence: ["its phone number is on the page"] }),
+    });
+    expect(search).not.toHaveBeenCalled();
+    expect(await prisma.business.findUniqueOrThrow({ where: { id: lead.id } })).toMatchObject({ onlineCheck: "found", website: "https://arberi.al/" });
+  });
+
+  it("keeps an unsure guess only when the search found nothing better", async () => {
+    const guessSite = async () => ({ verdict: "unsure" as const, url: "https://maybe.example/", evidence: ["its name is on the page"] });
+    const lead = await offlineLead("Arbëri");
+    await runOnlineCheck(prisma, campaignId, 20, { provider: provider([]), guessSite });
+    expect(await prisma.business.findUniqueOrThrow({ where: { id: lead.id } })).toMatchObject({ onlineCheck: "unsure", onlineCheckUrl: "https://maybe.example/" });
+
+    const other = await offlineLead("Arbëri 2");
+    await runOnlineCheck(prisma, campaignId, 20, {
+      provider: provider(["https://arberi.al"]),
+      fetchPage: async (url) => page(url.toString(), "Arbëri 2 +355 69 123 4567"),
+      guessSite,
+    });
+    expect(await prisma.business.findUniqueOrThrow({ where: { id: other.id } })).toMatchObject({ onlineCheck: "found" });
+  });
+
   it("only checks leads with no site of their own", async () => {
     await offlineLead("Has a site", { websiteStatus: "GOOD", website: "https://has.al" });
     const search = vi.fn(async () => []);
