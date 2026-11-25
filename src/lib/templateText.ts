@@ -36,6 +36,7 @@ export const PLACEHOLDERS = {
   business_type: "The campaign's business type, e.g. dentist",
   area: "The campaign's region, e.g. Tirana",
   website: "The business's website, when it has one",
+  order_page: "The shop's own link to the order page; only for shops it fits (see Order page shops)",
 } as const;
 
 export type Placeholder = keyof typeof PLACEHOLDERS;

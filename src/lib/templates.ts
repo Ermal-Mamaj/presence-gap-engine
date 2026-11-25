@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { fromStoredSignal } from "./detect";
+import { orderPageFit, trialLink } from "./orderPage";
 import { citableSignals, OutreachError } from "./outreach";
 import { isAnyBusiness } from "./sources/anyBusiness";
 import {
@@ -143,6 +144,8 @@ export async function draftFromTemplate(
     business_type: isAnyBusiness(lead.campaign.niche) ? null : lead.campaign.niche,
     area: lead.campaign.region,
     website: lead.website,
+    // Only for shops it fits, so a template offering it is skipped for a dentist.
+    order_page: orderPageFit(lead) ? trialLink(lead.id) : null,
   };
 
   for (const gapKey of gapOrder) {

@@ -37,7 +37,7 @@ const blank = (language: DraftLanguage, gapKey: TemplateGap = "no_website", chan
 });
 
 // What a preview fills in, so the text can be read as a business would.
-const SAMPLE = { name: "Klinika Arbëri", area: "Tirana", website: "klinika-arberi.al" };
+const SAMPLE = { name: "Klinika Arbëri", area: "Tirana", website: "klinika-arberi.al", order_page: "https://example.com/?r=g1a2b3c4d5" };
 
 const INPUT =
   "mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50";
