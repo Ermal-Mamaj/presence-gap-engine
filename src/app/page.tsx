@@ -88,6 +88,9 @@ export default function Home() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+          <Link href="/order-page" className="text-sm font-medium text-zinc-600 hover:underline dark:text-zinc-300">
+            Order page shops
+          </Link>
           <Link href="/templates" className="text-sm font-medium text-zinc-600 hover:underline dark:text-zinc-300">
             Templates
           </Link>
